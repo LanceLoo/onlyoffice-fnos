@@ -99,6 +99,23 @@ func (s *Service) GetFileContent(path string) (io.ReadCloser, error) {
 	return file, nil
 }
 
+// Exists returns true if the file exists at the given path
+func (s *Service) Exists(path string) (bool, error) {
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // SaveFile saves content to a file
 func (s *Service) SaveFile(path string, content io.Reader) error {
 	fullPath, err := s.resolvePath(path)

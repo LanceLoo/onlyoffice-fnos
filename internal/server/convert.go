@@ -34,6 +34,14 @@ type ConvertResponse struct {
 	Error      int    `json:"error,omitempty"`
 }
 
+// ConflictResponse represents a conversion conflict response
+type ConflictResponse struct {
+	Conflict   bool   `json:"conflict"`
+	TargetPath string `json:"targetPath"`
+	SourcePath string `json:"sourcePath"`
+	Message    string `json:"message"`
+}
+
 // handleConvert handles POST /convert
 // This endpoint executes format conversion via OnlyOffice conversion API
 func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +56,20 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	if filePath == "" {
 		s.respondError(w, http.StatusBadRequest, "File path is required")
 		return
+	}
+
+	// Get conflict resolution parameters
+	overwrite := r.URL.Query().Get("overwrite") == "true"
+	autoRename := r.URL.Query().Get("auto_rename") == "true"
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			if r.FormValue("overwrite") == "true" {
+				overwrite = true
+			}
+			if r.FormValue("auto_rename") == "true" {
+				autoRename = true
+			}
+		}
 	}
 
 	// Get file info
@@ -80,6 +102,39 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	if s.settings == nil || s.settings.DocumentServerURL == "" {
 		s.respondError(w, http.StatusBadRequest, "Document Server URL not configured")
 		return
+	}
+
+	// Build initial target file path
+	targetPath := s.buildTargetPath(filePath, targetFormat)
+
+	// Check if target already exists before calling conversion API
+	targetExists, err := s.fileService.Exists(targetPath)
+	if err != nil {
+		log.Printf("Convert error: failed to check target existence: %v", err)
+		s.respondError(w, http.StatusInternalServerError, "Failed to check target file")
+		return
+	}
+
+	// Handle conflict
+	if targetExists && !overwrite && !autoRename {
+		s.respondJSON(w, http.StatusConflict, &ConflictResponse{
+			Conflict:   true,
+			TargetPath: targetPath,
+			SourcePath: filePath,
+			Message:    "Target file already exists",
+		})
+		return
+	}
+
+	// Generate unique target path if requested
+	if targetExists && autoRename {
+		uniquePath, err := s.generateUniqueTargetPath(targetPath)
+		if err != nil {
+			log.Printf("Convert error: failed to generate unique target path: %v", err)
+			s.respondError(w, http.StatusInternalServerError, "Failed to generate unique target path")
+			return
+		}
+		targetPath = uniquePath
 	}
 
 	// Build download URL for the source file
@@ -134,9 +189,6 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	}
 	defer convertedContent.Close()
 
-	// Build target file path
-	targetPath := s.buildTargetPath(filePath, targetFormat)
-
 	// Save converted file
 	if err := s.fileService.SaveFile(targetPath, convertedContent); err != nil {
 		log.Printf("Convert error: failed to save converted file: %v", err)
@@ -190,6 +242,47 @@ func (s *Server) buildTargetPath(sourcePath, targetFormat string) string {
 	ext := filepath.Ext(base)
 	name := strings.TrimSuffix(base, ext)
 	return filepath.Join(dir, name+"."+targetFormat)
+}
+
+// generateUniqueTargetPath generates a non-conflicting target path by appending
+// " (converted)" or " (converted N)" to the base name when the target already exists.
+func (s *Server) generateUniqueTargetPath(basePath string) (string, error) {
+	dir := filepath.Dir(basePath)
+	ext := filepath.Ext(basePath)
+	name := strings.TrimSuffix(filepath.Base(basePath), ext)
+
+	// Try the base path first (in case it became free)
+	exists, err := s.fileService.Exists(basePath)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return basePath, nil
+	}
+
+	// Try "name (converted).ext"
+	candidate := filepath.Join(dir, name+" (converted)"+ext)
+	exists, err = s.fileService.Exists(candidate)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return candidate, nil
+	}
+
+	// Try "name (converted 2).ext" through "name (converted 10).ext"
+	for i := 2; i <= 10; i++ {
+		candidate = filepath.Join(dir, fmt.Sprintf("%s (converted %d)%s", name, i, ext))
+		exists, err = s.fileService.Exists(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not generate unique target path after 10 attempts")
 }
 
 // callConversionAPI calls the OnlyOffice conversion API
