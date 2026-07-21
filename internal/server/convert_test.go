@@ -24,7 +24,7 @@ func createConvertTestServer(t *testing.T, tempDir string, convertedContent []by
 
 func createConvertTestServerWithConvertCallback(t *testing.T, tempDir string, convertedContent []byte, onConvert func()) (*Server, *httptest.Server) {
 	mockDocServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/ConvertService.ashx" {
+		if r.Method == "POST" && r.URL.Path == "/converter" {
 			if onConvert != nil {
 				onConvert()
 			}
