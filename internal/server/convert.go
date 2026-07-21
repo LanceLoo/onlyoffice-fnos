@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 
 	"onlyoffice-fnos/internal/file"
 )
+
+const maxAutoRenameVariants = 10
 
 // ConvertRequest represents a conversion request
 type ConvertRequest struct {
@@ -71,6 +74,10 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if overwrite && autoRename {
+		s.respondError(w, http.StatusBadRequest, "overwrite and auto_rename cannot both be true")
+		return
+	}
 
 	// Get file info
 	fileInfo, err := s.fileService.GetFileInfo(filePath)
@@ -107,34 +114,20 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	// Build initial target file path
 	targetPath := s.buildTargetPath(filePath, targetFormat)
 
-	// Check if target already exists before calling conversion API
-	targetExists, err := s.fileService.Exists(targetPath)
-	if err != nil {
-		log.Printf("Convert error: failed to check target existence: %v", err)
-		s.respondError(w, http.StatusInternalServerError, "Failed to check target file")
-		return
-	}
-
-	// Handle conflict
-	if targetExists && !overwrite && !autoRename {
-		s.respondJSON(w, http.StatusConflict, &ConflictResponse{
-			Conflict:   true,
-			TargetPath: targetPath,
-			SourcePath: filePath,
-			Message:    "Target file already exists",
-		})
-		return
-	}
-
-	// Generate unique target path if requested
-	if targetExists && autoRename {
-		uniquePath, err := s.generateUniqueTargetPath(targetPath)
+	// This early check is only an optimization. The final no-replace publish
+	// below remains authoritative because another client can create the target
+	// while conversion is in progress.
+	if !overwrite && !autoRename {
+		targetExists, err := s.fileService.Exists(targetPath)
 		if err != nil {
-			log.Printf("Convert error: failed to generate unique target path: %v", err)
-			s.respondError(w, http.StatusInternalServerError, "Failed to generate unique target path")
+			log.Printf("Convert error: failed to check target existence: %v", err)
+			s.respondError(w, http.StatusInternalServerError, "Failed to check target file")
 			return
 		}
-		targetPath = uniquePath
+		if targetExists {
+			s.respondConvertConflict(w, filePath, targetPath, "Target file already exists")
+			return
+		}
 	}
 
 	// Build download URL for the source file
@@ -189,9 +182,29 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	}
 	defer convertedContent.Close()
 
-	// Save converted file
-	if err := s.fileService.SaveFile(targetPath, convertedContent); err != nil {
-		log.Printf("Convert error: failed to save converted file: %v", err)
+	// Publish converted content according to the requested conflict policy.
+	var saveErr error
+	if overwrite {
+		saveErr = s.fileService.SaveFile(targetPath, convertedContent)
+	} else if autoRename {
+		selectedTargetPath, err := s.fileService.SaveFileFirstAvailable(s.autoRenameCandidates(targetPath), convertedContent)
+		saveErr = err
+		if saveErr == nil {
+			targetPath = selectedTargetPath
+		}
+	} else {
+		saveErr = s.fileService.SaveFileNoReplace(targetPath, convertedContent)
+	}
+	if saveErr != nil {
+		if errors.Is(saveErr, file.ErrFileAlreadyExists) {
+			s.respondConvertConflict(w, filePath, targetPath, "Target file already exists")
+			return
+		}
+		if errors.Is(saveErr, file.ErrNoAvailableName) {
+			s.respondConvertConflict(w, filePath, targetPath, "No available converted file name; please rename or remove an existing converted file")
+			return
+		}
+		log.Printf("Convert error: failed to save converted file: %v", saveErr)
 		s.respondError(w, http.StatusInternalServerError, "Failed to save converted file")
 		return
 	}
@@ -210,6 +223,15 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		"success":    true,
 		"targetPath": targetPath,
 		"message":    "Conversion successful",
+	})
+}
+
+func (s *Server) respondConvertConflict(w http.ResponseWriter, sourcePath, targetPath, message string) {
+	s.respondJSON(w, http.StatusConflict, &ConflictResponse{
+		Conflict:   true,
+		TargetPath: targetPath,
+		SourcePath: sourcePath,
+		Message:    message,
 	})
 }
 
@@ -244,45 +266,22 @@ func (s *Server) buildTargetPath(sourcePath, targetFormat string) string {
 	return filepath.Join(dir, name+"."+targetFormat)
 }
 
-// generateUniqueTargetPath generates a non-conflicting target path by appending
-// " (converted)" or " (converted N)" to the base name when the target already exists.
-func (s *Server) generateUniqueTargetPath(basePath string) (string, error) {
+// autoRenameCandidates returns candidates in deterministic preference order.
+// Selection is performed atomically by SaveFileFirstAvailable, not by Exists.
+func (s *Server) autoRenameCandidates(basePath string) []string {
 	dir := filepath.Dir(basePath)
 	ext := filepath.Ext(basePath)
 	name := strings.TrimSuffix(filepath.Base(basePath), ext)
-
-	// Try the base path first (in case it became free)
-	exists, err := s.fileService.Exists(basePath)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return basePath, nil
-	}
-
-	// Try "name (converted).ext"
-	candidate := filepath.Join(dir, name+" (converted)"+ext)
-	exists, err = s.fileService.Exists(candidate)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return candidate, nil
-	}
-
-	// Try "name (converted 2).ext" through "name (converted 10).ext"
-	for i := 2; i <= 10; i++ {
-		candidate = filepath.Join(dir, fmt.Sprintf("%s (converted %d)%s", name, i, ext))
-		exists, err = s.fileService.Exists(candidate)
-		if err != nil {
-			return "", err
+	candidates := make([]string, 0, maxAutoRenameVariants+1)
+	candidates = append(candidates, basePath)
+	for i := 1; i <= maxAutoRenameVariants; i++ {
+		suffix := " (converted)"
+		if i > 1 {
+			suffix = fmt.Sprintf(" (converted %d)", i)
 		}
-		if !exists {
-			return candidate, nil
-		}
+		candidates = append(candidates, filepath.Join(dir, name+suffix+ext))
 	}
-
-	return "", fmt.Errorf("could not generate unique target path after 10 attempts")
+	return candidates
 }
 
 // callConversionAPI calls the OnlyOffice conversion API

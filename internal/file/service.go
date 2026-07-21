@@ -3,6 +3,7 @@ package file
 import (
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,11 +11,20 @@ import (
 )
 
 var (
-	ErrFileNotFound       = errors.New("file not found")
-	ErrInvalidPath        = errors.New("invalid file path")
-	ErrPermissionDenied   = errors.New("permission denied")
-	ErrSaveFailed         = errors.New("failed to save file")
-	ErrFileTooLarge       = errors.New("file size exceeds limit")
+	ErrFileNotFound     = errors.New("file not found")
+	ErrInvalidPath      = errors.New("invalid file path")
+	ErrPermissionDenied = errors.New("permission denied")
+	ErrSaveFailed       = errors.New("failed to save file")
+	ErrFileTooLarge     = errors.New("file size exceeds limit")
+	// ErrFileAlreadyExists indicates that an atomic no-replace save found an
+	// existing target file.
+	ErrFileAlreadyExists = errors.New("file already exists")
+	// ErrNoAvailableName indicates that none of the supplied candidate paths
+	// could be published without replacing an existing file.
+	ErrNoAvailableName = errors.New("no available file name")
+	// ErrNoReplaceUnsupported indicates that the current platform cannot
+	// atomically publish a file without replacing an existing target.
+	ErrNoReplaceUnsupported = errors.New("atomic no-replace save is unsupported on this platform")
 )
 
 // FileInfo represents information about a file
@@ -140,21 +150,9 @@ func (s *Service) SaveFile(path string, content io.Reader) error {
 		os.Remove(tempPath) // Clean up temp file on error
 	}()
 
-	// Copy content to temp file with size limit check
-	var written int64
-	if s.maxFileSize > 0 {
-		written, err = io.CopyN(tempFile, content, s.maxFileSize+1)
-		if written > s.maxFileSize {
-			return ErrFileTooLarge
-		}
-		if err != nil && err != io.EOF {
-			return ErrSaveFailed
-		}
-	} else {
-		written, err = io.Copy(tempFile, content)
-		if err != nil {
-			return ErrSaveFailed
-		}
+	// Copy content to temp file with size limit check.
+	if err := copyWithLimit(tempFile, content, s.maxFileSize); err != nil {
+		return err
 	}
 
 	// Close temp file before rename
@@ -168,6 +166,80 @@ func (s *Service) SaveFile(path string, content io.Reader) error {
 	}
 
 	return nil
+}
+
+// copyWithLimit copies content while enforcing maxFileSize. math.MaxInt64 is
+// already the largest representable file size, so adding one to probe for an
+// overflow would itself overflow; in that case an unrestricted copy preserves
+// the effective limit semantics.
+func copyWithLimit(dst io.Writer, content io.Reader, maxFileSize int64) error {
+	if maxFileSize <= 0 || maxFileSize == math.MaxInt64 {
+		if _, err := io.Copy(dst, content); err != nil {
+			return ErrSaveFailed
+		}
+		return nil
+	}
+
+	written, err := io.CopyN(dst, content, maxFileSize+1)
+	if written > maxFileSize {
+		return ErrFileTooLarge
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return ErrSaveFailed
+	}
+	return nil
+}
+
+// SaveFileNoReplace saves content to path only when path does not already
+// exist. On Linux, publication is atomic: concurrent writers cannot replace
+// each other's result.
+func (s *Service) SaveFileNoReplace(path string, content io.Reader) error {
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	return s.saveFileNoReplace(fullPath, content)
+}
+
+// SaveFileFirstAvailable saves content to the first candidate that can be
+// atomically published without replacing an existing file. It returns the
+// candidate path (as supplied) that was selected.
+func (s *Service) SaveFileFirstAvailable(candidates []string, content io.Reader) (string, error) {
+	if len(candidates) == 0 {
+		return "", ErrNoAvailableName
+	}
+
+	fullPaths := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		fullPath, err := s.resolvePath(candidate)
+		if err != nil {
+			return "", err
+		}
+		if i > 0 && filepath.Dir(fullPath) != filepath.Dir(fullPaths[0]) {
+			return "", ErrInvalidPath
+		}
+		fullPaths[i] = fullPath
+	}
+
+	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPaths[0]), content)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	for i, candidate := range candidates {
+		err = renameNoReplace(tempPath, fullPaths[i])
+		if err == nil {
+			return candidate, nil
+		}
+		if errors.Is(err, ErrFileAlreadyExists) {
+			continue
+		}
+		return "", err
+	}
+
+	return "", ErrNoAvailableName
 }
 
 // resolvePath resolves and validates the file path

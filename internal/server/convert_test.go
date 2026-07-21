@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"onlyoffice-fnos/internal/config"
@@ -18,8 +19,15 @@ import (
 
 // createConvertTestServer creates a test server with a mock OnlyOffice Document Server
 func createConvertTestServer(t *testing.T, tempDir string, convertedContent []byte) (*Server, *httptest.Server) {
+	return createConvertTestServerWithConvertCallback(t, tempDir, convertedContent, nil)
+}
+
+func createConvertTestServerWithConvertCallback(t *testing.T, tempDir string, convertedContent []byte, onConvert func()) (*Server, *httptest.Server) {
 	mockDocServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" && r.URL.Path == "/ConvertService.ashx" {
+			if onConvert != nil {
+				onConvert()
+			}
 			// Return conversion response with file URL pointing to ourselves
 			resp := ConvertResponse{
 				EndConvert: true,
@@ -53,8 +61,26 @@ func createConvertTestServer(t *testing.T, tempDir string, convertedContent []by
 	return server, mockDocServer
 }
 
+// convertTestLogicalPath matches file.Service's path resolution on each host.
+// Linux requires an absolute path inside the service basePath because relative
+// logical paths are normalized to root-relative paths before containment checks.
+func convertTestLogicalPath(tempDir, name string) string {
+	if runtime.GOOS == "linux" {
+		return filepath.Join(tempDir, name)
+	}
+	return name
+}
+
+func convertTestFilePath(tempDir, logicalPath string) string {
+	if filepath.IsAbs(logicalPath) {
+		return logicalPath
+	}
+	return filepath.Join(tempDir, logicalPath)
+}
+
 // TestConvertNoConflict tests conversion when target file does not exist
 func TestConvertNoConflict(t *testing.T) {
+	requireLinuxNoReplace(t)
 	tempDir, err := os.MkdirTemp("", "convert_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -74,7 +100,7 @@ func TestConvertNoConflict(t *testing.T) {
 
 	// Send convert request
 	form := url.Values{}
-	form.Set("path", "test.xls")
+	form.Set("path", convertTestLogicalPath(tempDir, "test.xls"))
 	req := httptest.NewRequest("POST", "/convert", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -131,7 +157,9 @@ func TestConvertConflict(t *testing.T) {
 
 	// Send convert request without resolution parameters
 	form := url.Values{}
-	form.Set("path", "test.xls")
+	logicalSourcePath := convertTestLogicalPath(tempDir, "test.xls")
+	logicalTargetPath := convertTestLogicalPath(tempDir, "test.xlsx")
+	form.Set("path", logicalSourcePath)
 	req := httptest.NewRequest("POST", "/convert", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -151,8 +179,8 @@ func TestConvertConflict(t *testing.T) {
 		t.Fatalf("Expected conflict=true, got %v", resp.Conflict)
 	}
 
-	if resp.TargetPath != "test.xlsx" {
-		t.Fatalf("Expected targetPath=/test.xlsx, got %s", resp.TargetPath)
+	if resp.TargetPath != logicalTargetPath {
+		t.Fatalf("Expected targetPath=%s, got %s", logicalTargetPath, resp.TargetPath)
 	}
 
 	// Verify target file was NOT overwritten
@@ -187,7 +215,7 @@ func TestConvertOverwrite(t *testing.T) {
 
 	// Send convert request with overwrite=true
 	form := url.Values{}
-	form.Set("path", "test.xls")
+	form.Set("path", convertTestLogicalPath(tempDir, "test.xls"))
 	req := httptest.NewRequest("POST", "/convert?overwrite=true", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -207,6 +235,7 @@ func TestConvertOverwrite(t *testing.T) {
 
 // TestConvertAutoRename tests conversion with auto_rename=true
 func TestConvertAutoRename(t *testing.T) {
+	requireLinuxNoReplace(t)
 	tempDir, err := os.MkdirTemp("", "convert_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -230,7 +259,7 @@ func TestConvertAutoRename(t *testing.T) {
 
 	// Send convert request with auto_rename=true
 	form := url.Values{}
-	form.Set("path", "test.xls")
+	form.Set("path", convertTestLogicalPath(tempDir, "test.xls"))
 	req := httptest.NewRequest("POST", "/convert?auto_rename=true", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -261,6 +290,7 @@ func TestConvertAutoRename(t *testing.T) {
 
 // TestConvertAutoRenameMultiple tests multiple auto-rename operations
 func TestConvertAutoRenameMultiple(t *testing.T) {
+	requireLinuxNoReplace(t)
 	tempDir, err := os.MkdirTemp("", "convert_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -290,7 +320,7 @@ func TestConvertAutoRenameMultiple(t *testing.T) {
 
 	// Send convert request with auto_rename=true
 	form := url.Values{}
-	form.Set("path", "test.xls")
+	form.Set("path", convertTestLogicalPath(tempDir, "test.xls"))
 	req := httptest.NewRequest("POST", "/convert?auto_rename=true", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -313,47 +343,141 @@ func TestConvertAutoRenameMultiple(t *testing.T) {
 	}
 }
 
-// TestGenerateUniqueTargetPath tests the unique path generation logic directly
-func TestGenerateUniqueTargetPath(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "convert_test_*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+func TestConvertAutoRenameExhaustedNamesReturnsConflict(t *testing.T) {
+	requireLinuxNoReplace(t)
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempDir)
+	server, mockServer := createConvertTestServer(t, tempDir, []byte("converted"))
+	defer mockServer.Close()
+	logicalTargetPath := convertTestLogicalPath(tempDir, "test.xlsx")
+	for _, candidate := range server.autoRenameCandidates(logicalTargetPath) {
+		if err := os.WriteFile(convertTestFilePath(tempDir, candidate), []byte("existing"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	server, mockServer := createConvertTestServer(t, tempDir, []byte(""))
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&auto_rename=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response ConflictResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Message != "No available converted file name; please rename or remove an existing converted file" {
+		t.Fatalf("unexpected exhausted-name message: %q", response.Message)
+	}
+	if response.TargetPath != logicalTargetPath {
+		t.Fatalf("expected original target path %q, got %q", logicalTargetPath, response.TargetPath)
+	}
+}
+
+func TestConvertRejectsOverwriteWithAutoRename(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	server, mockServer := createConvertTestServer(t, tempDir, []byte("new"))
 	defer mockServer.Close()
 
-	basePath := "test.xlsx"
+	req := httptest.NewRequest(http.MethodPost, "/convert?overwrite=true&auto_rename=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
 
-	// Test 1: no conflict
-	path, err := server.generateUniqueTargetPath(basePath)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+func TestAutoRenameCandidatesIncludeVariantsThroughTen(t *testing.T) {
+	server := &Server{}
+	candidates := server.autoRenameCandidates("test.xlsx")
+	if len(candidates) != maxAutoRenameVariants+1 {
+		t.Fatalf("expected base path plus %d variants, got %d candidates", maxAutoRenameVariants, len(candidates))
 	}
-	if path != basePath {
-		t.Fatalf("Expected %s, got %s", basePath, path)
+	if candidates[0] != "test.xlsx" || candidates[10] != "test (converted 10).xlsx" {
+		t.Fatalf("unexpected candidate sequence endpoints: %q, %q", candidates[0], candidates[10])
 	}
+}
 
-	// Test 2: base path exists, should get (converted)
-	os.WriteFile(filepath.Join(tempDir, "test.xlsx"), []byte(""), 0644)
-	path, err = server.generateUniqueTargetPath(basePath)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+func TestConvertDefaultPublishRaceReturnsConflict(t *testing.T) {
+	requireLinuxNoReplace(t)
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	expected := "test (converted).xlsx"
-	if path != expected {
-		t.Fatalf("Expected %s, got %s", expected, path)
-	}
+	targetPath := filepath.Join(tempDir, "test.xlsx")
+	injected := []byte("created during conversion")
+	server, mockServer := createConvertTestServerWithConvertCallback(t, tempDir, []byte("converted"), func() {
+		if err := os.WriteFile(targetPath, injected, 0644); err != nil {
+			t.Errorf("inject target: %v", err)
+		}
+	})
+	defer mockServer.Close()
 
-	// Test 3: (converted) exists, should get (converted 2)
-	os.WriteFile(filepath.Join(tempDir, "test (converted).xlsx"), []byte(""), 0644)
-	path, err = server.generateUniqueTargetPath(basePath)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls")), nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", rec.Code, rec.Body.String())
 	}
-	expected = "test (converted 2).xlsx"
-	if path != expected {
-		t.Fatalf("Expected %s, got %s", expected, path)
+	content, err := os.ReadFile(targetPath)
+	if err != nil || !bytes.Equal(content, injected) {
+		t.Fatalf("injected target was not preserved: %q, %v", content, err)
+	}
+}
+
+func TestConvertAutoRenamePublishRaceUsesLaterCandidate(t *testing.T) {
+	requireLinuxNoReplace(t)
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xlsx"), []byte("existing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	injectedPath := filepath.Join(tempDir, "test (converted).xlsx")
+	injected := []byte("created during conversion")
+	converted := []byte("converted")
+	server, mockServer := createConvertTestServerWithConvertCallback(t, tempDir, converted, func() {
+		if err := os.WriteFile(injectedPath, injected, 0644); err != nil {
+			t.Errorf("inject renamed target: %v", err)
+		}
+	})
+	defer mockServer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&auto_rename=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		TargetPath string `json:"targetPath"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	expectedTargetPath := convertTestLogicalPath(tempDir, "test (converted 2).xlsx")
+	if response.TargetPath != expectedTargetPath {
+		t.Fatalf("expected later candidate, got %q", response.TargetPath)
+	}
+	content, err := os.ReadFile(injectedPath)
+	if err != nil || !bytes.Equal(content, injected) {
+		t.Fatalf("injected candidate was not preserved: %q, %v", content, err)
+	}
+	content, err = os.ReadFile(convertTestFilePath(tempDir, response.TargetPath))
+	if err != nil || !bytes.Equal(content, converted) {
+		t.Fatalf("later candidate was not saved: %q, %v", content, err)
+	}
+}
+
+func requireLinuxNoReplace(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("atomic no-replace publication is supported only on Linux")
 	}
 }
