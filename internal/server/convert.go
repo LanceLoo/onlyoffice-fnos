@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +16,8 @@ import (
 
 	"onlyoffice-fnos/internal/file"
 )
+
+const maxAutoRenameVariants = 10
 
 // ConvertRequest represents a conversion request
 type ConvertRequest struct {
@@ -34,6 +38,14 @@ type ConvertResponse struct {
 	Error      int    `json:"error,omitempty"`
 }
 
+// ConflictResponse represents a conversion conflict response
+type ConflictResponse struct {
+	Conflict   bool   `json:"conflict"`
+	TargetPath string `json:"targetPath"`
+	SourcePath string `json:"sourcePath"`
+	Message    string `json:"message"`
+}
+
 // handleConvert handles POST /convert
 // This endpoint executes format conversion via OnlyOffice conversion API
 func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +59,24 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 
 	if filePath == "" {
 		s.respondError(w, http.StatusBadRequest, "File path is required")
+		return
+	}
+
+	// Get conflict resolution parameters
+	overwrite := r.URL.Query().Get("overwrite") == "true"
+	autoRename := r.URL.Query().Get("auto_rename") == "true"
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			if r.FormValue("overwrite") == "true" {
+				overwrite = true
+			}
+			if r.FormValue("auto_rename") == "true" {
+				autoRename = true
+			}
+		}
+	}
+	if overwrite && autoRename {
+		s.respondError(w, http.StatusBadRequest, "overwrite and auto_rename cannot both be true")
 		return
 	}
 
@@ -82,11 +112,32 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build initial target file path
+	targetPath := s.buildTargetPath(filePath, targetFormat)
+
+	// This early check is only an optimization. The final no-replace publish
+	// below remains authoritative because another client can create the target
+	// while conversion is in progress.
+	if !overwrite && !autoRename {
+		targetExists, err := s.fileService.Exists(targetPath)
+		if err != nil {
+			log.Printf("Convert error: failed to check target existence: %v", err)
+			s.respondError(w, http.StatusInternalServerError, "Failed to check target file")
+			return
+		}
+		if targetExists {
+			s.respondConvertConflict(w, filePath, targetPath, "Target file already exists")
+			return
+		}
+	}
+
 	// Build download URL for the source file
 	downloadURL := s.buildDownloadURL(filePath)
 
-	// Generate unique key for conversion
-	conversionKey := fmt.Sprintf("convert_%s_%d", filePath, time.Now().UnixNano())
+	// Generate a stable, opaque key that changes when the source file changes.
+	keyMaterial := fmt.Sprintf("%s\x00%s\x00%d", filePath, fileInfo.ModTime.UTC().Format(time.RFC3339Nano), fileInfo.Size)
+	keyHash := sha256.Sum256([]byte(keyMaterial))
+	conversionKey := "convert-" + fmt.Sprintf("%x", keyHash[:])[:24]
 
 	// Build conversion request
 	convReq := &ConvertRequest{
@@ -134,12 +185,29 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	}
 	defer convertedContent.Close()
 
-	// Build target file path
-	targetPath := s.buildTargetPath(filePath, targetFormat)
-
-	// Save converted file
-	if err := s.fileService.SaveFile(targetPath, convertedContent); err != nil {
-		log.Printf("Convert error: failed to save converted file: %v", err)
+	// Publish converted content according to the requested conflict policy.
+	var saveErr error
+	if overwrite {
+		saveErr = s.fileService.SaveFile(targetPath, convertedContent)
+	} else if autoRename {
+		selectedTargetPath, err := s.fileService.SaveFileFirstAvailable(s.autoRenameCandidates(targetPath), convertedContent)
+		saveErr = err
+		if saveErr == nil {
+			targetPath = selectedTargetPath
+		}
+	} else {
+		saveErr = s.fileService.SaveFileNoReplace(targetPath, convertedContent)
+	}
+	if saveErr != nil {
+		if errors.Is(saveErr, file.ErrFileAlreadyExists) {
+			s.respondConvertConflict(w, filePath, targetPath, "Target file already exists")
+			return
+		}
+		if errors.Is(saveErr, file.ErrNoAvailableName) {
+			s.respondConvertConflict(w, filePath, targetPath, "No available converted file name; please rename or remove an existing converted file")
+			return
+		}
+		log.Printf("Convert error: failed to save converted file: %v", saveErr)
 		s.respondError(w, http.StatusInternalServerError, "Failed to save converted file")
 		return
 	}
@@ -158,6 +226,15 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		"success":    true,
 		"targetPath": targetPath,
 		"message":    "Conversion successful",
+	})
+}
+
+func (s *Server) respondConvertConflict(w http.ResponseWriter, sourcePath, targetPath, message string) {
+	s.respondJSON(w, http.StatusConflict, &ConflictResponse{
+		Conflict:   true,
+		TargetPath: targetPath,
+		SourcePath: sourcePath,
+		Message:    message,
 	})
 }
 
@@ -192,13 +269,39 @@ func (s *Server) buildTargetPath(sourcePath, targetFormat string) string {
 	return filepath.Join(dir, name+"."+targetFormat)
 }
 
+// autoRenameCandidates returns candidates in deterministic preference order.
+// Selection is performed atomically by SaveFileFirstAvailable, not by Exists.
+func (s *Server) autoRenameCandidates(basePath string) []string {
+	dir := filepath.Dir(basePath)
+	ext := filepath.Ext(basePath)
+	name := strings.TrimSuffix(filepath.Base(basePath), ext)
+	candidates := make([]string, 0, maxAutoRenameVariants+1)
+	candidates = append(candidates, basePath)
+	for i := 1; i <= maxAutoRenameVariants; i++ {
+		suffix := " (converted)"
+		if i > 1 {
+			suffix = fmt.Sprintf(" (converted %d)", i)
+		}
+		candidates = append(candidates, filepath.Join(dir, name+suffix+ext))
+	}
+	return candidates
+}
+
 // callConversionAPI calls the OnlyOffice conversion API
 func (s *Server) callConversionAPI(serverURL string, req *ConvertRequest, secret string) (string, error) {
 	// Build API URL
-	apiURL := strings.TrimSuffix(serverURL, "/") + "/ConvertService.ashx"
+	apiURL := strings.TrimSuffix(serverURL, "/") + "/converter"
 
-	// Marshal request
-	reqBody, err := json.Marshal(req)
+	// JWT_IN_BODY requires a body containing only the signed token.
+	requestBody := interface{}(req)
+	if req.Token != "" {
+		requestBody = struct {
+			Token string `json:"token"`
+		}{Token: req.Token}
+	}
+
+	// Marshal request body
+	reqBody, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -211,11 +314,6 @@ func (s *Server) callConversionAPI(serverURL string, req *ConvertRequest, secret
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-
-	// Add JWT token to header if configured
-	if secret != "" && req.Token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+req.Token)
-	}
 
 	// Send request
 	client := &http.Client{

@@ -6,6 +6,10 @@
     <title>格式转换 - {{.FileName}}</title>
     <link rel="stylesheet" href="/static/bulma.min.css">
     <script src="/static/htmx.min.js"></script>
+    <style>
+        .modal { display: none; }
+        .modal.is-active { display: flex; }
+    </style>
 </head>
 <body>
     <section class="hero is-fullheight has-background-light">
@@ -15,13 +19,13 @@
                     <div class="column is-half-desktop is-two-thirds-tablet">
                         <div class="box">
                             <h1 class="title is-5 has-text-centered">文档格式转换</h1>
-                            
+
                             <div id="error">
                                 {{if .Error}}
                                 <div class="notification is-danger">{{.Error}}</div>
                                 {{end}}
                             </div>
-                            
+
                             <div class="has-text-centered mb-4">
                                 <p class="is-size-5 has-text-weight-medium mb-2">{{.FileName}}</p>
                                 <div>
@@ -30,16 +34,14 @@
                                     <span class="tag is-success is-medium">{{.TargetFormat}}</span>
                                 </div>
                             </div>
-                            
+
                             <p class="has-text-grey has-text-centered mb-5">该文件格式 ({{.SourceFormat}}) 不支持直接编辑。您可以选择以下操作：</p>
-                            
+
                             <form hx-post="/convert" hx-target="#error" hx-swap="innerHTML">
                                 <input type="hidden" name="path" value="{{.FilePath}}">
                                 <button type="submit" class="button is-primary is-fullwidth is-medium mb-3">转换为 {{.TargetFormat}} 并编辑</button>
                             </form>
-                            
-                            <a href="/editor?path={{.FilePathEncoded}}&mode=view" class="button is-light is-fullwidth is-medium mb-5">以只读模式查看</a>
-                            
+                            <a href="/editor?path={{.FilePath}}&mode=view" class="button is-light is-fullwidth is-medium mb-5">以只读模式查看</a>
                             <p class="has-text-centered">
                                 <a href="/" class="has-text-grey">← 返回设置</a>
                             </p>
@@ -49,5 +51,71 @@
             </div>
         </div>
     </section>
+
+    <!-- Conflict resolution modal -->
+    <div class="modal" id="conflict-modal">
+        <div class="modal-background" onclick="closeConflictModal()"></div>
+        <div class="modal-card">
+            <header class="modal-card-head">
+                <p class="modal-card-title">目标文件已存在</p>
+                <button class="delete" aria-label="close" onclick="closeConflictModal()"></button>
+            </header>
+            <section class="modal-card-body">
+                <p id="conflict-message">目标文件已存在，请选择操作：</p>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" onclick="closeConflictModal()">取消</button>
+                <button class="button is-warning" onclick="submitOverwrite()">覆盖</button>
+                <button class="button is-success" onclick="submitAutoRename()">生成带后缀文件</button>
+            </footer>
+        </div>
+    </div>
+
+    <script>
+        let conflictTargetPath = '';
+        let conflictSourcePath = '';
+
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            if (evt.detail.xhr.status === 409) {
+                try {
+                    const resp = JSON.parse(evt.detail.xhr.responseText);
+                    if (resp.conflict) {
+                        conflictTargetPath = resp.targetPath;
+                        conflictSourcePath = resp.sourcePath;
+                        document.getElementById('conflict-message').textContent =
+                            '"' + resp.targetPath + '" 已存在，请选择操作：';
+                        document.getElementById('conflict-modal').classList.add('is-active');
+                        // Clear the error area since we're showing the modal instead
+                        document.getElementById('error').innerHTML = '';
+                        evt.preventDefault();
+                    }
+                } catch (e) {
+                    // Not JSON, let HTMX handle it
+                }
+            }
+        });
+
+        function closeConflictModal() {
+            document.getElementById('conflict-modal').classList.remove('is-active');
+        }
+
+        function submitOverwrite() {
+            closeConflictModal();
+            htmx.ajax('POST', '/convert?overwrite=true', {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: conflictSourcePath }
+            });
+        }
+
+        function submitAutoRename() {
+            closeConflictModal();
+            htmx.ajax('POST', '/convert?auto_rename=true', {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: conflictSourcePath }
+            });
+        }
+    </script>
 </body>
 </html>

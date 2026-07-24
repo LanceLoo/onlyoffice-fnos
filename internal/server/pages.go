@@ -402,6 +402,13 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
         .btn { display: block; width: 100%; padding: 12px; margin: 10px 0; text-align: center; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
         .btn-primary { background: #4a90d9; color: white; }
         .btn-secondary { background: #f0f0f0; color: #333; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal.is-active { display: flex; align-items: center; justify-content: center; }
+        .modal-card { background: white; border-radius: 8px; max-width: 400px; width: 90%; }
+        .modal-card-head { padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .modal-card-body { padding: 16px; }
+        .modal-card-foot { padding: 16px; border-top: 1px solid #ddd; display: flex; gap: 8px; justify-content: flex-end; }
+        .delete { background: none; border: none; font-size: 20px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -414,6 +421,67 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
         <button type="submit" class="btn btn-primary">转换为 ` + data.TargetFormat + ` 并编辑</button>
     </form>
     <a href="/editor?path=` + data.FilePathEncoded + `&mode=view" class="btn btn-secondary">以只读模式查看</a>
+
+    <div class="modal" id="conflict-modal">
+        <div class="modal-card">
+            <div class="modal-card-head">
+                <strong>目标文件已存在</strong>
+                <button class="delete" onclick="closeConflictModal()">&times;</button>
+            </div>
+            <div class="modal-card-body">
+                <p id="conflict-message">目标文件已存在，请选择操作：</p>
+            </div>
+            <div class="modal-card-foot">
+                <button class="btn btn-secondary" onclick="closeConflictModal()">取消</button>
+                <button class="btn" style="background:#ffdd57;" onclick="submitOverwrite()">覆盖</button>
+                <button class="btn" style="background:#48c774;color:white;" onclick="submitAutoRename()">生成带后缀文件</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let conflictTargetPath = '';
+        let conflictSourcePath = '';
+
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            if (evt.detail.xhr.status === 409) {
+                try {
+                    const resp = JSON.parse(evt.detail.xhr.responseText);
+                    if (resp.conflict) {
+                        conflictTargetPath = resp.targetPath;
+                        conflictSourcePath = resp.sourcePath;
+                        document.getElementById('conflict-message').textContent =
+                            '"' + resp.targetPath + '" 已存在，请选择操作：';
+                        document.getElementById('conflict-modal').classList.add('is-active');
+                        document.getElementById('error').innerHTML = '';
+                        evt.preventDefault();
+                    }
+                } catch (e) {}
+            }
+        });
+
+        function closeConflictModal() {
+            document.getElementById('conflict-modal').classList.remove('is-active');
+        }
+
+        function submitOverwrite() {
+            closeConflictModal();
+            htmx.ajax('POST', '/convert?overwrite=true', {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: conflictSourcePath }
+            });
+        }
+
+        function submitAutoRename() {
+            closeConflictModal();
+            htmx.ajax('POST', '/convert?auto_rename=true', {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: conflictSourcePath }
+            });
+        }
+    </script>
 </body>
 </html>`
 	w.Write([]byte(html))
