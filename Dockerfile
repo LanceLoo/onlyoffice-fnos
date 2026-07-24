@@ -4,7 +4,9 @@ WORKDIR /app
 
 # Copy go mod files
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go env -w GOPROXY=https://goproxy.cn,direct \
+    && go env -w GOSUMDB=sum.golang.google.cn \
+    && go mod download
 
 # Copy source code
 COPY . .
