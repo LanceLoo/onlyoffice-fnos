@@ -408,6 +408,12 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
         .modal-card-head { padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
         .modal-card-body { padding: 16px; }
         .modal-card-foot { padding: 16px; border-top: 1px solid #ddd; display: flex; gap: 8px; justify-content: flex-end; }
+        .conflict-actions { flex-wrap: wrap; }
+        .conflict-actions .btn { flex: 1 1 auto; width: auto; margin: 0; }
+        @media screen and (max-width: 480px) {
+            .conflict-actions { flex-direction: column; }
+            .conflict-actions .btn { width: 100%; }
+        }
         .delete { background: none; border: none; font-size: 20px; cursor: pointer; }
     </style>
 </head>
@@ -431,7 +437,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             <div class="modal-card-body">
                 <p id="conflict-message">目标文件已存在，请选择操作：</p>
             </div>
-            <div class="modal-card-foot">
+            <div class="modal-card-foot conflict-actions">
                 <button class="btn btn-secondary" onclick="closeConflictModal()">取消</button>
                 <button class="btn" style="background:#ffdd57;" onclick="submitOverwrite()">覆盖</button>
                 <button class="btn" style="background:#48c774;color:white;" onclick="submitAutoRename()">生成带后缀文件</button>
