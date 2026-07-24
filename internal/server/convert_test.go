@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -177,6 +178,9 @@ func TestConvertConflict(t *testing.T) {
 
 	if !resp.Conflict {
 		t.Fatalf("Expected conflict=true, got %v", resp.Conflict)
+	}
+	if !file.AtomicNoReplaceSupported() && resp.Reason != "atomic_no_replace_unsupported" {
+		t.Fatalf("expected unsupported capability reason, got %q", resp.Reason)
 	}
 
 	if resp.TargetPath != logicalTargetPath {
@@ -472,6 +476,241 @@ func TestConvertAutoRenamePublishRaceUsesLaterCandidate(t *testing.T) {
 	content, err = os.ReadFile(convertTestFilePath(tempDir, response.TargetPath))
 	if err != nil || !bytes.Equal(content, converted) {
 		t.Fatalf("later candidate was not saved: %q, %v", content, err)
+	}
+}
+
+func TestConvertRequiresUnsafeConfirmationBeforeConversion(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := false
+	server, mockServer := createConvertTestServerWithConvertCallback(t, tempDir, []byte("converted"), func() { converted = true })
+	defer mockServer.Close()
+
+	originalCapability := atomicNoReplaceSupported
+	atomicNoReplaceSupported = func() bool { return false }
+	t.Cleanup(func() { atomicNoReplaceSupported = originalCapability })
+
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls")), nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if converted {
+		t.Fatal("conversion API was called before unsafe-save confirmation")
+	}
+	var response ConflictResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Reason != "atomic_no_replace_unsupported" {
+		t.Fatalf("unexpected reason: %q", response.Reason)
+	}
+}
+
+func TestConvertUnsafeSaveNoReplace(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := []byte("converted")
+	server, mockServer := createConvertTestServer(t, tempDir, converted)
+	defer mockServer.Close()
+
+	originalCapability := atomicNoReplaceSupported
+	atomicNoReplaceSupported = func() bool { return false }
+	t.Cleanup(func() { atomicNoReplaceSupported = originalCapability })
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&allow_unsafe_save=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "test.xlsx"))
+	if err != nil || !bytes.Equal(content, converted) {
+		t.Fatalf("unsafe no-replace save failed: %q, %v", content, err)
+	}
+}
+
+func TestConvertUnsafeSaveExistingTargetReturnsConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xlsx"), []byte("existing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := false
+	server, mockServer := createConvertTestServerWithConvertCallback(t, tempDir, []byte("converted"), func() { converted = true })
+	defer mockServer.Close()
+
+	originalCapability := atomicNoReplaceSupported
+	atomicNoReplaceSupported = func() bool { return false }
+	t.Cleanup(func() { atomicNoReplaceSupported = originalCapability })
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&allow_unsafe_save=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || converted {
+		t.Fatalf("expected pre-conversion conflict, status=%d converted=%v", rec.Code, converted)
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "test.xlsx"))
+	if err != nil || string(content) != "existing" {
+		t.Fatalf("existing target was changed: %q, %v", content, err)
+	}
+}
+
+func TestConvertUnsafeSaveAutoRename(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xlsx"), []byte("existing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := []byte("converted")
+	server, mockServer := createConvertTestServer(t, tempDir, converted)
+	defer mockServer.Close()
+
+	originalCapability := atomicNoReplaceSupported
+	atomicNoReplaceSupported = func() bool { return false }
+	t.Cleanup(func() { atomicNoReplaceSupported = originalCapability })
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&auto_rename=true&allow_unsafe_save=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "test (converted).xlsx"))
+	if err != nil || !bytes.Equal(content, converted) {
+		t.Fatalf("unsafe auto-rename save failed: %q, %v", content, err)
+	}
+}
+
+func TestConvertRuntimeNoReplaceUnsupportedRequiresConfirmation(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := false
+	server, mockServer := createConvertTestServerWithConvertCallback(t, tempDir, []byte("converted"), func() { converted = true })
+	defer mockServer.Close()
+
+	originalCapability, originalSave := atomicNoReplaceSupported, saveFileNoReplaceWithFallback
+	atomicNoReplaceSupported = func() bool { return true }
+	saveFileNoReplaceWithFallback = func(*file.Service, string, io.Reader, bool) error { return file.ErrNoReplaceUnsupported }
+	t.Cleanup(func() {
+		atomicNoReplaceSupported = originalCapability
+		saveFileNoReplaceWithFallback = originalSave
+	})
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls")), nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !converted {
+		t.Fatalf("expected post-conversion confirmation conflict, status=%d converted=%v", rec.Code, converted)
+	}
+	var response ConflictResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Reason != "atomic_no_replace_unsupported" {
+		t.Fatalf("unexpected reason: %q", response.Reason)
+	}
+}
+
+func TestConvertConsentStillUsesAtomicNoReplace(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	server, mockServer := createConvertTestServer(t, tempDir, []byte("converted"))
+	defer mockServer.Close()
+
+	originalCapability, originalSave := atomicNoReplaceSupported, saveFileNoReplaceWithFallback
+	atomicNoReplaceSupported = func() bool { return true }
+	atomicFirstCalls := 0
+	saveFileNoReplaceWithFallback = func(service *file.Service, path string, content io.Reader, allowUnsafeFallback bool) error {
+		atomicFirstCalls++
+		if !allowUnsafeFallback {
+			t.Fatal("consent was not forwarded as fallback authorization")
+		}
+		return service.SaveFile(path, content)
+	}
+	t.Cleanup(func() {
+		atomicNoReplaceSupported = originalCapability
+		saveFileNoReplaceWithFallback = originalSave
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&allow_unsafe_save=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if atomicFirstCalls != 1 {
+		t.Fatalf("atomic-first save calls = %d, want 1", atomicFirstCalls)
+	}
+}
+
+func TestConvertRuntimeNoReplaceUnsupportedUsesConsentFallback(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	converted := []byte("converted")
+	server, mockServer := createConvertTestServer(t, tempDir, converted)
+	defer mockServer.Close()
+
+	originalCapability, originalSave := atomicNoReplaceSupported, saveFileNoReplaceWithFallback
+	atomicNoReplaceSupported = func() bool { return true }
+	atomicAttempts := 0
+	saveFileNoReplaceWithFallback = func(service *file.Service, path string, content io.Reader, allowUnsafeFallback bool) error {
+		atomicAttempts++
+		if !allowUnsafeFallback {
+			return file.ErrNoReplaceUnsupported
+		}
+		return service.SaveFileNoReplaceWithFallback(path, content, true)
+	}
+	t.Cleanup(func() {
+		atomicNoReplaceSupported = originalCapability
+		saveFileNoReplaceWithFallback = originalSave
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&allow_unsafe_save=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if atomicAttempts != 1 {
+		t.Fatalf("expected one atomic-first save call, got %d", atomicAttempts)
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "test.xlsx"))
+	if err != nil || !bytes.Equal(content, converted) {
+		t.Fatalf("fallback did not preserve converted content: %q, %v", content, err)
+	}
+}
+
+func TestConvertOverwriteDoesNotRequireUnsafeConfirmation(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "test.xlsx"), []byte("existing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	server, mockServer := createConvertTestServer(t, tempDir, []byte("converted"))
+	defer mockServer.Close()
+
+	originalCapability := atomicNoReplaceSupported
+	atomicNoReplaceSupported = func() bool { return false }
+	t.Cleanup(func() { atomicNoReplaceSupported = originalCapability })
+	req := httptest.NewRequest(http.MethodPost, "/convert?path="+url.QueryEscape(convertTestLogicalPath(tempDir, "test.xls"))+"&overwrite=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected overwrite to succeed without confirmation, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

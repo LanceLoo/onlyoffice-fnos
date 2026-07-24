@@ -43,8 +43,21 @@ type ConflictResponse struct {
 	Conflict   bool   `json:"conflict"`
 	TargetPath string `json:"targetPath"`
 	SourcePath string `json:"sourcePath"`
+	Reason     string `json:"reason,omitempty"`
 	Message    string `json:"message"`
 }
+
+const atomicNoReplaceUnsupportedMessage = "Compatibility mode cannot guarantee that a concurrent write will not be overwritten. Resubmit with allow_unsafe_save=true to continue."
+
+var (
+	atomicNoReplaceSupported      = file.AtomicNoReplaceSupported
+	saveFileNoReplaceWithFallback = func(service *file.Service, path string, content io.Reader, allowUnsafeFallback bool) error {
+		return service.SaveFileNoReplaceWithFallback(path, content, allowUnsafeFallback)
+	}
+	saveFileFirstAvailableWithFallback = func(service *file.Service, paths []string, content io.Reader, allowUnsafeFallback bool) (string, error) {
+		return service.SaveFileFirstAvailableWithFallback(paths, content, allowUnsafeFallback)
+	}
+)
 
 // handleConvert handles POST /convert
 // This endpoint executes format conversion via OnlyOffice conversion API
@@ -65,6 +78,7 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	// Get conflict resolution parameters
 	overwrite := r.URL.Query().Get("overwrite") == "true"
 	autoRename := r.URL.Query().Get("auto_rename") == "true"
+	allowUnsafeSave := r.URL.Query().Get("allow_unsafe_save") == "true"
 	if r.Method == http.MethodPost {
 		if err := r.ParseForm(); err == nil {
 			if r.FormValue("overwrite") == "true" {
@@ -73,13 +87,15 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 			if r.FormValue("auto_rename") == "true" {
 				autoRename = true
 			}
+			if r.FormValue("allow_unsafe_save") == "true" {
+				allowUnsafeSave = true
+			}
 		}
 	}
 	if overwrite && autoRename {
 		s.respondError(w, http.StatusBadRequest, "overwrite and auto_rename cannot both be true")
 		return
 	}
-
 	// Get file info
 	fileInfo, err := s.fileService.GetFileInfo(filePath)
 	if err != nil {
@@ -114,6 +130,10 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 
 	// Build initial target file path
 	targetPath := s.buildTargetPath(filePath, targetFormat)
+	if !overwrite && !allowUnsafeSave && !atomicNoReplaceSupported() {
+		s.respondAtomicNoReplaceUnsupported(w, filePath, targetPath)
+		return
+	}
 
 	// This early check is only an optimization. The final no-replace publish
 	// below remains authoritative because another client can create the target
@@ -130,7 +150,6 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
 	// Build download URL for the source file
 	downloadURL := s.buildDownloadURL(filePath)
 
@@ -190,13 +209,13 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	if overwrite {
 		saveErr = s.fileService.SaveFile(targetPath, convertedContent)
 	} else if autoRename {
-		selectedTargetPath, err := s.fileService.SaveFileFirstAvailable(s.autoRenameCandidates(targetPath), convertedContent)
+		selectedTargetPath, err := saveFileFirstAvailableWithFallback(s.fileService, s.autoRenameCandidates(targetPath), convertedContent, allowUnsafeSave)
 		saveErr = err
 		if saveErr == nil {
 			targetPath = selectedTargetPath
 		}
 	} else {
-		saveErr = s.fileService.SaveFileNoReplace(targetPath, convertedContent)
+		saveErr = saveFileNoReplaceWithFallback(s.fileService, targetPath, convertedContent, allowUnsafeSave)
 	}
 	if saveErr != nil {
 		if errors.Is(saveErr, file.ErrFileAlreadyExists) {
@@ -205,6 +224,10 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(saveErr, file.ErrNoAvailableName) {
 			s.respondConvertConflict(w, filePath, targetPath, "No available converted file name; please rename or remove an existing converted file")
+			return
+		}
+		if errors.Is(saveErr, file.ErrNoReplaceUnsupported) {
+			s.respondAtomicNoReplaceUnsupported(w, filePath, targetPath)
 			return
 		}
 		log.Printf("Convert error: failed to save converted file: %v", saveErr)
@@ -226,6 +249,16 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		"success":    true,
 		"targetPath": targetPath,
 		"message":    "Conversion successful",
+	})
+}
+
+func (s *Server) respondAtomicNoReplaceUnsupported(w http.ResponseWriter, sourcePath, targetPath string) {
+	s.respondJSON(w, http.StatusConflict, &ConflictResponse{
+		Conflict:   true,
+		TargetPath: targetPath,
+		SourcePath: sourcePath,
+		Reason:     "atomic_no_replace_unsupported",
+		Message:    atomicNoReplaceUnsupportedMessage,
 	})
 }
 
