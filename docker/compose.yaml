@@ -84,7 +84,7 @@ services:
       - onlyoffice-documentserver
 
   onlyoffice-connector:
-    image: xingheliufang/onlyoffice-fnos:latest
+    image: lanceloo/onlyoffice-fnos:latest
     container_name: onlyoffice-connector
     networks:
       - onlyoffice-net

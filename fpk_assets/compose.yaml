@@ -201,7 +201,7 @@ services:
       - /var/apps/docker-onlyoffice/shares/onlyoffice/fonts:/usr/share/fonts/truetype/custom
 
   onlyoffice-connector:
-    image: xingheliufang/onlyoffice-fnos:main
+    image: lanceloo/onlyoffice-fnos:latest
     container_name: onlyoffice-connector
     networks:
       - onlyoffice-net
