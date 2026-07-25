@@ -9,6 +9,12 @@
     <style>
         .modal { display: none; }
         .modal.is-active { display: flex; }
+        .modal-actions { flex-wrap: wrap; gap: 0.75rem; }
+        .modal-actions .button { flex: 1 1 auto; margin: 0; white-space: normal; height: auto; min-width: 120px; }
+        @media screen and (max-width: 480px) {
+            .modal-actions { flex-direction: column; }
+            .modal-actions .button { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -52,19 +58,19 @@
         </div>
     </section>
 
-    <!-- Conflict resolution modal -->
+    <!-- Conflict resolution / compatibility confirmation modal -->
     <div class="modal" id="conflict-modal">
-        <div class="modal-background" onclick="closeConflictModal()"></div>
+        <div class="modal-background" onclick="cancelModal()"></div>
         <div class="modal-card">
             <header class="modal-card-head">
-                <p class="modal-card-title">目标文件已存在</p>
-                <button class="delete" aria-label="close" onclick="closeConflictModal()"></button>
+                <p class="modal-card-title" id="modal-title">目标文件已存在</p>
+                <button class="delete" aria-label="close" onclick="cancelModal()"></button>
             </header>
             <section class="modal-card-body">
-                <p id="conflict-message">目标文件已存在，请选择操作：</p>
+                <p id="modal-message">目标文件已存在，请选择操作：</p>
             </section>
-            <footer class="modal-card-foot">
-                <button class="button" onclick="closeConflictModal()">取消</button>
+            <footer class="modal-card-foot modal-actions" id="modal-actions">
+                <button class="button" onclick="cancelModal()">取消</button>
                 <button class="button is-warning" onclick="submitOverwrite()">覆盖</button>
                 <button class="button is-success" onclick="submitAutoRename()">生成带后缀文件</button>
             </footer>
@@ -72,26 +78,49 @@
     </div>
 
     <script>
-        let conflictTargetPath = '';
-        let conflictSourcePath = '';
+        let currentSourcePath = '';
+        let compatConfirmed = false;
+        let pendingConflictPolicy = 'default'; // 'default' | 'autoRename' | 'overwrite'
+
+        function resetCompatState() {
+            compatConfirmed = false;
+            pendingConflictPolicy = 'default';
+        }
+
+        function getSourcePath(resp) {
+            if (resp && resp.sourcePath) return resp.sourcePath;
+            const input = document.querySelector('input[name="path"]');
+            return input ? input.value : '';
+        }
+
+        document.querySelector('form[hx-post="/convert"]').addEventListener('submit', resetCompatState);
+
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.successful) {
+                resetCompatState();
+            }
+        });
 
         document.body.addEventListener('htmx:responseError', function(evt) {
-            if (evt.detail.xhr.status === 409) {
-                try {
-                    const resp = JSON.parse(evt.detail.xhr.responseText);
-                    if (resp.conflict) {
-                        conflictTargetPath = resp.targetPath;
-                        conflictSourcePath = resp.sourcePath;
-                        document.getElementById('conflict-message').textContent =
-                            '"' + resp.targetPath + '" 已存在，请选择操作：';
-                        document.getElementById('conflict-modal').classList.add('is-active');
-                        // Clear the error area since we're showing the modal instead
-                        document.getElementById('error').innerHTML = '';
-                        evt.preventDefault();
-                    }
-                } catch (e) {
-                    // Not JSON, let HTMX handle it
-                }
+            let resp;
+            try {
+                resp = JSON.parse(evt.detail.xhr.responseText);
+            } catch (e) {
+                return;
+            }
+            if (!resp) return;
+
+            // Compatibility mode confirmation takes precedence over a normal conflict.
+            if (resp.reason === 'atomic_no_replace_unsupported') {
+                currentSourcePath = getSourcePath(resp);
+                openCompatibilityModal();
+                document.getElementById('error').innerHTML = '';
+                evt.preventDefault();
+            } else if (resp.conflict) {
+                currentSourcePath = getSourcePath(resp);
+                openConflictModal(resp.targetPath || '');
+                document.getElementById('error').innerHTML = '';
+                evt.preventDefault();
             }
         });
 
@@ -99,21 +128,73 @@
             document.getElementById('conflict-modal').classList.remove('is-active');
         }
 
+        function cancelModal() {
+            resetCompatState();
+            closeConflictModal();
+        }
+
+        function openConflictModal(targetPath) {
+            document.getElementById('modal-title').textContent = '目标文件已存在';
+            document.getElementById('modal-message').textContent =
+                (targetPath ? '"' + targetPath + '" ' : '') + '已存在，请选择操作：';
+            document.getElementById('modal-actions').innerHTML =
+                '<button class="button" onclick="cancelModal()">取消</button>' +
+                '<button class="button is-warning" onclick="submitOverwrite()">覆盖</button>' +
+                '<button class="button is-success" onclick="submitAutoRename()">生成带后缀文件</button>';
+            document.getElementById('conflict-modal').classList.add('is-active');
+        }
+
+        function openCompatibilityModal() {
+            document.getElementById('modal-title').textContent = '需要确认兼容模式';
+            document.getElementById('modal-message').innerHTML =
+                '当前系统无法使用原子无替换保存。继续将以兼容模式保存转换后的文件，' +
+                '该模式无法保证：如果转换过程中有其他用户创建了同名文件，可能会造成冲突或覆盖。<br><br>' +
+                '是否继续使用兼容模式？';
+            document.getElementById('modal-actions').innerHTML =
+                '<button class="button" onclick="cancelModal()">取消</button>' +
+                '<button class="button is-primary" onclick="submitCompatibilityMode()">继续使用兼容模式</button>';
+            document.getElementById('conflict-modal').classList.add('is-active');
+        }
+
         function submitOverwrite() {
+            pendingConflictPolicy = 'overwrite';
             closeConflictModal();
             htmx.ajax('POST', '/convert?overwrite=true', {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: conflictSourcePath }
+                values: { path: currentSourcePath }
             });
         }
 
         function submitAutoRename() {
+            pendingConflictPolicy = 'autoRename';
             closeConflictModal();
-            htmx.ajax('POST', '/convert?auto_rename=true', {
+            const params = compatConfirmed ? '?auto_rename=true&allow_unsafe_save=true' : '?auto_rename=true';
+            htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: conflictSourcePath }
+                values: { path: currentSourcePath }
+            });
+        }
+
+        function submitCompatibilityMode() {
+            compatConfirmed = true;
+            closeConflictModal();
+
+            // Retry the last user conflict choice, falling back to a plain compat confirmation.
+            let params;
+            if (pendingConflictPolicy === 'autoRename') {
+                params = '?auto_rename=true&allow_unsafe_save=true';
+            } else if (pendingConflictPolicy === 'overwrite') {
+                params = '?overwrite=true';
+            } else {
+                params = '?allow_unsafe_save=true';
+            }
+
+            htmx.ajax('POST', '/convert' + params, {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: currentSourcePath }
             });
         }
     </script>

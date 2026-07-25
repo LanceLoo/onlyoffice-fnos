@@ -202,24 +202,57 @@ func (s *Service) SaveFileNoReplace(path string, content io.Reader) error {
 	return s.saveFileNoReplace(fullPath, content)
 }
 
+// SaveFileNoReplaceWithFallback atomically publishes content without replacing
+// path when possible. If the atomic primitive is unavailable at publication
+// time, allowUnsafeFallback permits the explicitly non-atomic compatibility
+// fallback. Content is staged only once, so fallback does not re-read it.
+func (s *Service) SaveFileNoReplaceWithFallback(path string, content io.Reader, allowUnsafeFallback bool) error {
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPath), content)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	err = renameNoReplace(tempPath, fullPath)
+	if errors.Is(err, ErrNoReplaceUnsupported) && allowUnsafeFallback {
+		return renameIfUnoccupied(tempPath, fullPath)
+	}
+	return err
+}
+
+// SaveFileNoReplaceUnsafe saves content only when path was unoccupied at the
+// time it was checked. It stages content before publication, but the existence
+// check and os.Rename are necessarily non-atomic. A concurrent writer can
+// create path after the check and have its file replaced by os.Rename.
+// Callers must obtain explicit user consent before using this compatibility
+// fallback.
+func (s *Service) SaveFileNoReplaceUnsafe(path string, content io.Reader) error {
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPath), content)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	return renameIfUnoccupied(tempPath, fullPath)
+}
+
 // SaveFileFirstAvailable saves content to the first candidate that can be
 // atomically published without replacing an existing file. It returns the
 // candidate path (as supplied) that was selected.
 func (s *Service) SaveFileFirstAvailable(candidates []string, content io.Reader) (string, error) {
-	if len(candidates) == 0 {
-		return "", ErrNoAvailableName
-	}
-
-	fullPaths := make([]string, len(candidates))
-	for i, candidate := range candidates {
-		fullPath, err := s.resolvePath(candidate)
-		if err != nil {
-			return "", err
-		}
-		if i > 0 && filepath.Dir(fullPath) != filepath.Dir(fullPaths[0]) {
-			return "", ErrInvalidPath
-		}
-		fullPaths[i] = fullPath
+	fullPaths, err := s.resolveCandidates(candidates)
+	if err != nil {
+		return "", err
 	}
 
 	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPaths[0]), content)
@@ -240,6 +273,111 @@ func (s *Service) SaveFileFirstAvailable(candidates []string, content io.Reader)
 	}
 
 	return "", ErrNoAvailableName
+}
+
+// SaveFileFirstAvailableWithFallback atomically publishes content to the first
+// available candidate when possible. If atomic publication is unavailable at
+// runtime, allowUnsafeFallback permits compatibility publication using the
+// same staged file rather than reading content again.
+func (s *Service) SaveFileFirstAvailableWithFallback(candidates []string, content io.Reader, allowUnsafeFallback bool) (string, error) {
+	fullPaths, err := s.resolveCandidates(candidates)
+	if err != nil {
+		return "", err
+	}
+
+	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPaths[0]), content)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	for i, candidate := range candidates {
+		err = renameNoReplace(tempPath, fullPaths[i])
+		if err == nil {
+			return candidate, nil
+		}
+		if errors.Is(err, ErrFileAlreadyExists) {
+			continue
+		}
+		if errors.Is(err, ErrNoReplaceUnsupported) && allowUnsafeFallback {
+			return renameFirstUnoccupied(tempPath, candidates, fullPaths)
+		}
+		return "", err
+	}
+
+	return "", ErrNoAvailableName
+}
+
+// SaveFileFirstAvailableUnsafe saves content to the first candidate that was
+// unoccupied when checked. As with SaveFileNoReplaceUnsafe, there is a
+// check-to-rename race: os.Rename can replace a candidate concurrently created
+// after its existence check. Callers must obtain explicit user consent before
+// using this compatibility fallback.
+func (s *Service) SaveFileFirstAvailableUnsafe(candidates []string, content io.Reader) (string, error) {
+	fullPaths, err := s.resolveCandidates(candidates)
+	if err != nil {
+		return "", err
+	}
+
+	tempPath, cleanup, err := s.stageFile(filepath.Dir(fullPaths[0]), content)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	return renameFirstUnoccupied(tempPath, candidates, fullPaths)
+}
+
+func (s *Service) resolveCandidates(candidates []string) ([]string, error) {
+	if len(candidates) == 0 {
+		return nil, ErrNoAvailableName
+	}
+
+	fullPaths := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		fullPath, err := s.resolvePath(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 && filepath.Dir(fullPath) != filepath.Dir(fullPaths[0]) {
+			return nil, ErrInvalidPath
+		}
+		fullPaths[i] = fullPath
+	}
+	return fullPaths, nil
+}
+
+func renameFirstUnoccupied(tempPath string, candidates, fullPaths []string) (string, error) {
+	for i, candidate := range candidates {
+		err := renameIfUnoccupied(tempPath, fullPaths[i])
+		if err == nil {
+			return candidate, nil
+		}
+		if errors.Is(err, ErrFileAlreadyExists) {
+			continue
+		}
+		return "", err
+	}
+	return "", ErrNoAvailableName
+}
+
+func renameIfUnoccupied(oldPath, newPath string) error {
+	// Lstat treats a dangling symlink as occupied too; os.Rename would replace
+	// that directory entry even though Stat reports it as not existing.
+	_, err := os.Lstat(newPath)
+	if err == nil {
+		return ErrFileAlreadyExists
+	}
+	if !os.IsNotExist(err) {
+		return ErrSaveFailed
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		if errors.Is(err, os.ErrExist) || os.IsExist(err) {
+			return ErrFileAlreadyExists
+		}
+		return ErrSaveFailed
+	}
+	return nil
 }
 
 // resolvePath resolves and validates the file path

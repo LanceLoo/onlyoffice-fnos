@@ -408,6 +408,12 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
         .modal-card-head { padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
         .modal-card-body { padding: 16px; }
         .modal-card-foot { padding: 16px; border-top: 1px solid #ddd; display: flex; gap: 8px; justify-content: flex-end; }
+        .modal-actions { flex-wrap: wrap; display: flex; }
+        .modal-actions .btn { flex: 1 1 auto; width: auto; margin: 0; min-width: 120px; padding: 12px; }
+        @media screen and (max-width: 480px) {
+            .modal-actions { flex-direction: column; }
+            .modal-actions .btn { width: 100%; }
+        }
         .delete { background: none; border: none; font-size: 20px; cursor: pointer; }
     </style>
 </head>
@@ -422,17 +428,17 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
     </form>
     <a href="/editor?path=` + data.FilePathEncoded + `&mode=view" class="btn btn-secondary">以只读模式查看</a>
 
-    <div class="modal" id="conflict-modal">
+    <div class="modal" id="conflict-modal" onclick="if (event.target === this) cancelModal();">
         <div class="modal-card">
             <div class="modal-card-head">
-                <strong>目标文件已存在</strong>
-                <button class="delete" onclick="closeConflictModal()">&times;</button>
+                <strong id="modal-title">目标文件已存在</strong>
+                <button class="delete" onclick="cancelModal()">&times;</button>
             </div>
             <div class="modal-card-body">
-                <p id="conflict-message">目标文件已存在，请选择操作：</p>
+                <p id="modal-message">目标文件已存在，请选择操作：</p>
             </div>
-            <div class="modal-card-foot">
-                <button class="btn btn-secondary" onclick="closeConflictModal()">取消</button>
+            <div class="modal-card-foot modal-actions" id="modal-actions">
+                <button class="btn btn-secondary" onclick="cancelModal()">取消</button>
                 <button class="btn" style="background:#ffdd57;" onclick="submitOverwrite()">覆盖</button>
                 <button class="btn" style="background:#48c774;color:white;" onclick="submitAutoRename()">生成带后缀文件</button>
             </div>
@@ -440,23 +446,48 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
     </div>
 
     <script>
-        let conflictTargetPath = '';
-        let conflictSourcePath = '';
+        let currentSourcePath = '';
+        let compatConfirmed = false;
+        let pendingConflictPolicy = 'default'; // 'default' | 'autoRename' | 'overwrite'
+
+        function resetCompatState() {
+            compatConfirmed = false;
+            pendingConflictPolicy = 'default';
+        }
+
+        function getSourcePath(resp) {
+            if (resp && resp.sourcePath) return resp.sourcePath;
+            const input = document.querySelector('input[name="path"]');
+            return input ? input.value : '';
+        }
+
+        document.querySelector('form[hx-post="/convert"]').addEventListener('submit', resetCompatState);
+
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.successful) {
+                resetCompatState();
+            }
+        });
 
         document.body.addEventListener('htmx:responseError', function(evt) {
-            if (evt.detail.xhr.status === 409) {
-                try {
-                    const resp = JSON.parse(evt.detail.xhr.responseText);
-                    if (resp.conflict) {
-                        conflictTargetPath = resp.targetPath;
-                        conflictSourcePath = resp.sourcePath;
-                        document.getElementById('conflict-message').textContent =
-                            '"' + resp.targetPath + '" 已存在，请选择操作：';
-                        document.getElementById('conflict-modal').classList.add('is-active');
-                        document.getElementById('error').innerHTML = '';
-                        evt.preventDefault();
-                    }
-                } catch (e) {}
+            let resp;
+            try {
+                resp = JSON.parse(evt.detail.xhr.responseText);
+            } catch (e) {
+                return;
+            }
+            if (!resp) return;
+
+            if (resp.reason === 'atomic_no_replace_unsupported') {
+                currentSourcePath = getSourcePath(resp);
+                openCompatibilityModal();
+                document.getElementById('error').innerHTML = '';
+                evt.preventDefault();
+            } else if (resp.conflict) {
+                currentSourcePath = getSourcePath(resp);
+                openConflictModal(resp.targetPath || '');
+                document.getElementById('error').innerHTML = '';
+                evt.preventDefault();
             }
         });
 
@@ -464,21 +495,73 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             document.getElementById('conflict-modal').classList.remove('is-active');
         }
 
+        function cancelModal() {
+            resetCompatState();
+            closeConflictModal();
+        }
+
+        function openConflictModal(targetPath) {
+            document.getElementById('modal-title').textContent = '目标文件已存在';
+            document.getElementById('modal-message').textContent =
+                (targetPath ? '"' + targetPath + '" ' : '') + '已存在，请选择操作：';
+            document.getElementById('modal-actions').innerHTML =
+                '<button class="btn btn-secondary" onclick="cancelModal()">取消</button>' +
+                '<button class="btn" style="background:#ffdd57;" onclick="submitOverwrite()">覆盖</button>' +
+                '<button class="btn" style="background:#48c774;color:white;" onclick="submitAutoRename()">生成带后缀文件</button>';
+            document.getElementById('conflict-modal').classList.add('is-active');
+        }
+
+        function openCompatibilityModal() {
+            document.getElementById('modal-title').textContent = '需要确认兼容模式';
+            document.getElementById('modal-message').innerHTML =
+                '当前系统无法使用原子无替换保存。继续将以兼容模式保存转换后的文件，' +
+                '该模式无法保证：如果转换过程中有其他用户创建了同名文件，可能会造成冲突或覆盖。<br><br>' +
+                '是否继续使用兼容模式？';
+            document.getElementById('modal-actions').innerHTML =
+                '<button class="btn btn-secondary" onclick="cancelModal()">取消</button>' +
+                '<button class="btn" style="background:#4a90d9;color:white;" onclick="submitCompatibilityMode()">继续使用兼容模式</button>';
+            document.getElementById('conflict-modal').classList.add('is-active');
+        }
+
         function submitOverwrite() {
+            pendingConflictPolicy = 'overwrite';
             closeConflictModal();
             htmx.ajax('POST', '/convert?overwrite=true', {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: conflictSourcePath }
+                values: { path: currentSourcePath }
             });
         }
 
         function submitAutoRename() {
+            pendingConflictPolicy = 'autoRename';
             closeConflictModal();
-            htmx.ajax('POST', '/convert?auto_rename=true', {
+            const params = compatConfirmed ? '?auto_rename=true&allow_unsafe_save=true' : '?auto_rename=true';
+            htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: conflictSourcePath }
+                values: { path: currentSourcePath }
+            });
+        }
+
+        function submitCompatibilityMode() {
+            compatConfirmed = true;
+            closeConflictModal();
+
+            // Retry the last user conflict choice, falling back to a plain compat confirmation.
+            let params;
+            if (pendingConflictPolicy === 'autoRename') {
+                params = '?auto_rename=true&allow_unsafe_save=true';
+            } else if (pendingConflictPolicy === 'overwrite') {
+                params = '?overwrite=true';
+            } else {
+                params = '?allow_unsafe_save=true';
+            }
+
+            htmx.ajax('POST', '/convert' + params, {
+                target: '#error',
+                swap: 'innerHTML',
+                values: { path: currentSourcePath }
             });
         }
     </script>
@@ -506,7 +589,6 @@ func (s *Server) renderErrorPageFallback(w http.ResponseWriter, data *ErrorPageD
 </html>`
 	w.Write([]byte(html))
 }
-
 
 // getDocServerFrontendPath returns the frontend path for Document Server JS
 // This is a relative path that the browser will resolve against the current host

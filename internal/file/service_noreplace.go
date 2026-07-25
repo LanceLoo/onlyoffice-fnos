@@ -6,6 +6,11 @@ import (
 	"path/filepath"
 )
 
+// renameNoReplace is a seam around the platform implementation. Keeping the
+// staging and fallback decision in Service makes a runtime lack of renameat2
+// support distinct from a compile-time lack of support.
+var renameNoReplace = platformRenameNoReplace
+
 // saveFileNoReplace stages content in the target directory before platform
 // specific code publishes it. Keeping staging here guarantees the same size
 // limit behavior as SaveFile and avoids partially-written target files.
