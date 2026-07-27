@@ -156,12 +156,12 @@ jobs:
           remote="https://github.com/${GITHUB_REPOSITORY}.git"
           peeled_ref="refs/tags/$TAG^{}"
           direct_ref="refs/tags/$TAG"
-          refs="$(git ls-remote "$remote" "$direct_ref")"
+          refs="$(git ls-remote "$remote" "$direct_ref" "$peeled_ref")"
           peeled_sha="$(printf '%s\n' "$refs" | awk -v ref="$peeled_ref" '$2 == ref { print $1 }')"
           direct_sha="$(printf '%s\n' "$refs" | awk -v ref="$direct_ref" '$2 == ref { print $1 }')"
-          tag_sha="${peeled_sha:-$direct_sha}"
-          test -n "$tag_sha"
-          test "$tag_sha" = "$COMMIT_SHA"
+          tag_commit_sha="${peeled_sha:-$direct_sha}"
+          test -n "$tag_commit_sha"
+          test "$tag_commit_sha" = "$COMMIT_SHA"
 
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

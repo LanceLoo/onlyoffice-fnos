@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('docker-pr-{0}', github.event.pull_request.number) || format('docker-release-publish-{0}', github.ref_name) }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: docker.io
   IMAGE_NAME: lanceloo/onlyoffice-fnos
@@ -60,9 +64,6 @@ jobs:
   build-and-push:
     needs: [quality, validate-release-tag]
     runs-on: ubuntu-latest
-    concurrency:
-      group: ${{ github.event_name == 'push' && 'docker-release-publish' || format('docker-pr-{0}', github.event.pull_request.number) }}
-      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
