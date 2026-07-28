@@ -386,43 +386,36 @@ func (s *Service) resolvePath(path string) (string, error) {
 		return "", ErrInvalidPath
 	}
 
-	// Normalize path: ensure it starts with "/" for consistency
-	// This handles the difference between iPad (vol2/...) and desktop (/vol2/...)
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-
-	// Clean the path
-	cleanPath := filepath.Clean(path)
-
-	// If basePath is set, ensure the path is within it
 	if s.basePath != "" {
-		// If path is relative, join with basePath
-		if !filepath.IsAbs(cleanPath) {
-			cleanPath = filepath.Join(s.basePath, cleanPath)
+		candidate := path
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(s.basePath, candidate)
 		}
 
-		// Ensure the resolved path is within basePath
-		absPath, err := filepath.Abs(cleanPath)
+		absPath, err := filepath.Abs(filepath.Clean(candidate))
 		if err != nil {
 			return "", ErrInvalidPath
 		}
 
-		absBase, err := filepath.Abs(s.basePath)
+		absBase, err := filepath.Abs(filepath.Clean(s.basePath))
 		if err != nil {
 			return "", ErrInvalidPath
 		}
 
-		// Check for path traversal
-		if !strings.HasPrefix(absPath, absBase) {
+		rel, err := filepath.Rel(absBase, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			return "", ErrInvalidPath
 		}
 
 		return absPath, nil
 	}
 
-	// If no basePath, just return the cleaned path
-	return cleanPath, nil
+	// Preserve fnOS compatibility: paths without a leading slash are logical
+	// volume paths such as vol2/... and therefore refer to /vol2/....
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return filepath.Clean(path), nil
 }
 
 // GetBasePath returns the base path for file operations

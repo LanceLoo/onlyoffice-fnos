@@ -62,13 +62,7 @@ func createConvertTestServerWithConvertCallback(t *testing.T, tempDir string, co
 	return server, mockDocServer
 }
 
-// convertTestLogicalPath matches file.Service's path resolution on each host.
-// Linux requires an absolute path inside the service basePath because relative
-// logical paths are normalized to root-relative paths before containment checks.
-func convertTestLogicalPath(tempDir, name string) string {
-	if runtime.GOOS == "linux" {
-		return filepath.Join(tempDir, name)
-	}
+func convertTestLogicalPath(_ string, name string) string {
 	return name
 }
 
