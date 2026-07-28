@@ -122,7 +122,9 @@ jobs:
           shopt -s nullglob
           files=(./dist/*.fpk)
           ((${#files[@]} == 1))
-          mv "${files[0]}" "./dist/$ARTIFACT_NAME"
+          sudo mv -- "${files[0]}" "./dist/$ARTIFACT_NAME"
+          sudo chown "${USER}:${USER}" "./dist/$ARTIFACT_NAME"
+          sudo chmod 0644 "./dist/$ARTIFACT_NAME"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
