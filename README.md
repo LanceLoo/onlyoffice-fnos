@@ -2,11 +2,11 @@
 
 在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX 等格式的在线编辑，以及 DOC、XLS、PPT、ODT、ODS、ODP 等格式的转换和查看。
 
+这是基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 的 Docker 化 fnOS 文件连接器 fork；不计划开发原生 fnOS 应用。
+
 > ⚠️ **早期开发阶段**
 > 
 > 本应用仍处于非常早期的开发阶段，可能存在各种意料之外的 BUG。不同设备、不同客户端版本也可能产生不同的结果。**不建议在生产环境中使用**。
-
-![OnlyOffice Connector](README.assets/image.png)
 
 ## 功能特性
 
@@ -14,7 +14,7 @@
 - **格式转换**: 自动将旧格式 (DOC/XLS/PPT) 转换为 OOXML 格式
 - **文档查看**: 支持 PDF、EPUB、FB2 等格式的在线预览
 - **JWT 安全**: 支持 JWT 签名验证，确保文档传输安全
-- **fnOS 集成**: 专为飞牛 NAS (fnOS) 设计的应用连接器
+- **fnOS 集成**: 面向飞牛 NAS（fnOS）适配的应用连接器
 
 ## 支持的文件格式
 
@@ -28,7 +28,7 @@
 
 ### 方式一：WatchCow + Docker Compose（推荐）
 
-最灵活的部署方式，可随时调整配置和存储卷挂载。
+最灵活的部署方式，可随时调整配置和存储卷挂载。该方式通过 [WatchCow](https://github.com/tf4fun/watchcow) 集成 fnOS 文件管理器右键菜单。
 
 进入 docker 目录，复制 `.env.example` 为 `.env` 并配置：
 
@@ -54,32 +54,28 @@ JWT_SECRET=your-secret-key-change-me
 docker compose up -d
 ```
 
-> ⚠️ **注意**：请根据你机器上的存储卷路径，修改 `compose.yaml` 中 `onlyoffice-connector` 的 volumes 挂载。默认配置为 `/vol1:/vol1` 等，需要改成你实际的存储路径。
+> ⚠️ **注意**：请根据你机器上的存储卷路径，修改 `compose.yaml` 中 `onlyoffice-connector` 的 volumes 挂载。默认挂载为 `/vol00:/vol00`、`/vol1:/vol1`、`/vol2:/vol2`，请按实际情况调整。
 
 这会启动三个容器：
 - `onlyoffice-nginx`: 反向代理入口 (端口 9080)
-- `onlyoffice-connector`: 连接器服务
-- `onlyoffice-doc-svr`: OnlyOffice Document Server
+- `onlyoffice-connector`: 连接器服务（镜像：`lanceloo/onlyoffice-fnos:latest`）
+- `onlyoffice-doc-svr`: ONLYOFFICE Docs（Document Server）
 
-部署完成后，需要安装 [watchcow](https://github.com/tf4fun/watchcow) 来实现文件管理器右键菜单集成。
+部署完成后，按 WatchCow 的说明完成集成即可使用文件管理器右键菜单。
 
 ### 方式二：FPK 安装包
 
-前往 [Releases](https://github.com/xingheliufang/onlyoffice-fnos/releases) 页面下载最新的 `.fpk` 安装包，在 fnOS 应用中心选择「手动安装」上传即可。
+前往本项目的 GitHub Releases 页面下载 `.fpk` 安装包，在 fnOS 应用中心选择「手动安装」上传即可。FPK 包提供自身的 fnOS 应用集成，无需 WatchCow。
 
 > ⚠️ **FPK 包的局限性**
 > 
-> FPK 包本质上仍是基于 Docker 实现，只是提供了官方的安装引导流程。存在以下限制：
+> FPK 包本质上仍基于 Docker，只是提供安装引导流程。存在以下限制：
 > 
-> - **存储卷固定**：安装时会自动获取当前系统所有的 `/vol*` 存储卷，但无法处理后续增加或减少的存储卷
+> - **存储卷固定**：安装时会发现当时存在的 `/vol*` 存储卷；后续增加或减少的存储卷不会自动更新
 > - **无法重建容器**：fnOS 目前不支持重建应用容器以更新配置
 > - **灵活性较低**：相比方式一，配置调整不够灵活
 > 
 > 如需更高的灵活性，建议使用方式一。
-
-### 方式三：原生应用（开发中）
-
-本应用涉及多个组件（nginx、connector、document server），网络拓扑较为复杂。原生部署方式仍在探索中，待简化后提供。
 
 ## 使用
 
@@ -128,6 +124,12 @@ go test ./...
 ## 许可证
 
 MIT License
+
+本项目基于上游项目 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos)，其 README 声明采用 MIT License。本 fork 保留上游的署名和许可证声明；本 fork 的变更记录见项目历史。本项目与 fnOS 及 ONLYOFFICE 均无官方关联或背书关系。
+
+### 第三方组件与商标
+
+[ONLYOFFICE Docs（Document Server）](https://github.com/ONLYOFFICE/DocumentServer) 是独立发布的第三方组件；其开源版本及不同发行版的许可证、商用条款和使用条件请以官方项目说明为准。ONLYOFFICE、fnOS 及相关名称和标识属于各自权利人的商标或品牌。
 
 ## 致谢
 

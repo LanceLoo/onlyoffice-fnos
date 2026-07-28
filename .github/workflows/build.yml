@@ -1,63 +1,171 @@
 name: Build fnOS Package
 
 on:
-  push:
-    branches:
-      - main
-      - 'dev-*'
-    tags:
-      - 'v*.*.*'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - README.md
+      - docs/**
+  workflow_run:
+    workflows:
+      - Build and Push Docker Image
+    types: [completed]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  pr-build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set version in manifest
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          sed -i "s/version: \".*\"/version: \"$VERSION\"/" ./fpk_assets/compose.yaml
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build FPK Package
-        uses: tf4fun/fpk-compose-builder@main
-        id: build
+        uses: tf4fun/fpk-compose-builder@65d752ddf4250db659a2c538b25df4446df1bebd # current upstream main; no tag available
         with:
           input-dir: ./fpk_assets
           output-dir: ./dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: onlyoffice-connector-package
           path: ./dist/*.fpk
+          if-no-files-found: error
 
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+  release-build:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release_ref.outputs.tag }}
+      version: ${{ steps.release_ref.outputs.version }}
+      artifact_name: ${{ steps.release_ref.outputs.artifact_name }}
+      commit_sha: ${{ steps.release_ref.outputs.commit_sha }}
+    concurrency:
+      group: fpk-release-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out Docker-validated commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release tag and commit
+        id: release_ref
+        env:
+          TAG: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-list -n 1 "$TAG")" = "$HEAD_SHA"
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=onlyoffice-fnos-$VERSION.fpk" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Patch package manifest for release
+        env:
+          VERSION: ${{ steps.release_ref.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          path = pathlib.Path("fpk_assets/compose.yaml")
+          content = path.read_text(encoding="utf-8")
+          version_pattern = r'(?m)^(    version: ")[^"]+(")$'
+          source_image = "lanceloo/onlyoffice-fnos:latest"
+          target_image = f'lanceloo/onlyoffice-fnos:{os.environ["VERSION"]}'
+
+          if len(re.findall(version_pattern, content)) != 1:
+              raise SystemExit("expected exactly one manifest version field")
+          if content.count(source_image) != 1:
+              raise SystemExit(f"expected exactly one {source_image} reference")
+
+          content, version_replacements = re.subn(
+              version_pattern,
+              rf'\g<1>{os.environ["VERSION"]}\g<2>',
+              content,
+          )
+          content = content.replace(source_image, target_image)
+          if version_replacements != 1 or content.count(target_image) != 1:
+              raise SystemExit("manifest patch verification failed")
+          path.write_text(content, encoding="utf-8")
+          PY
+
+      - name: Build FPK Package
+        uses: tf4fun/fpk-compose-builder@65d752ddf4250db659a2c538b25df4446df1bebd # current upstream main; no tag available
+        with:
+          input-dir: ./fpk_assets
+          output-dir: ./dist
+
+      - name: Rename release FPK
+        env:
+          ARTIFACT_NAME: ${{ steps.release_ref.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(./dist/*.fpk)
+          ((${#files[@]} == 1))
+          mv "${files[0]}" "./dist/$ARTIFACT_NAME"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.release_ref.outputs.artifact_name }}
+          path: ./dist/${{ steps.release_ref.outputs.artifact_name }}
+          if-no-files-found: error
+
+  release-publish:
+    needs: release-build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: fpk-release-${{ needs.release-build.outputs.tag }}
+      cancel-in-progress: false
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - name: Download release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: onlyoffice-connector-package
+          name: ${{ needs.release-build.outputs.artifact_name }}
+          path: ./release-artifact
 
-      - name: Get version
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Rename FPK
-        run: mv *.fpk onlyoffice-fnos-${{ steps.version.outputs.version }}.fpk
+      # Protected tags should also prevent force updates or deletions where repository controls allow.
+      - name: Verify release tag still points to Docker-validated commit
+        env:
+          TAG: ${{ needs.release-build.outputs.tag }}
+          COMMIT_SHA: ${{ needs.release-build.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          peeled_ref="refs/tags/$TAG^{}"
+          direct_ref="refs/tags/$TAG"
+          refs="$(git ls-remote "$remote" "$direct_ref" "$peeled_ref")"
+          peeled_sha="$(printf '%s\n' "$refs" | awk -v ref="$peeled_ref" '$2 == ref { print $1 }')"
+          direct_sha="$(printf '%s\n' "$refs" | awk -v ref="$direct_ref" '$2 == ref { print $1 }')"
+          tag_commit_sha="${peeled_sha:-$direct_sha}"
+          test -n "$tag_commit_sha"
+          test "$tag_commit_sha" = "$COMMIT_SHA"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: onlyoffice-fnos-${{ steps.version.outputs.version }}.fpk
+          tag_name: ${{ needs.release-build.outputs.tag }}
+          files: ./release-artifact/${{ needs.release-build.outputs.artifact_name }}
           generate_release_notes: true

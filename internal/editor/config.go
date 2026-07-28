@@ -16,10 +16,10 @@ import (
 
 // EditorConfig represents the complete OnlyOffice editor configuration
 type EditorConfig struct {
-	Document     DocumentConfig     `json:"document"`
-	DocumentType string             `json:"documentType"` // word, cell, slide
-	EditorConfig EditorConfigInner  `json:"editorConfig"`
-	Token        string             `json:"token,omitempty"`
+	Document     DocumentConfig    `json:"document"`
+	DocumentType string            `json:"documentType"` // word, cell, slide
+	EditorConfig EditorConfigInner `json:"editorConfig"`
+	Token        string            `json:"token,omitempty"`
 }
 
 // DocumentConfig represents the document configuration
@@ -54,13 +54,13 @@ type UserConfig struct {
 
 // ConfigRequest represents a request to build editor configuration
 type ConfigRequest struct {
-	FilePath    string
-	FileInfo    *file.FileInfo
-	UserID      string
-	UserName    string
-	Lang        string
-	BaseURL     string // Base URL for download and callback endpoints
-	JWTSecret   string
+	FilePath  string
+	FileInfo  *file.FileInfo
+	UserID    string
+	UserName  string
+	Lang      string
+	BaseURL   string // Base URL for download and callback endpoints
+	JWTSecret string
 }
 
 // ConfigBuilder builds OnlyOffice editor configurations

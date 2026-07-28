@@ -3,11 +3,11 @@ x-fnpack:
     appname: "docker-onlyoffice"
     desc: "OnlyOffice 文档编辑器 - 在浏览器中编辑 Office 文档"
     display_name: "OnlyOffice-FNOS"
-    version: "1.0.0"
-    maintainer: "tf4fun"
-    maintainer_url: "https://github.com/tf4fun"
-    distributor: "tf4fun"
-    distributor_url: "https://github.com/tf4fun"
+    version: "latest"
+    maintainer: "LanceLoo"
+    maintainer_url: "https://github.com/LanceLoo"
+    distributor: "LanceLoo"
+    distributor_url: "https://github.com/LanceLoo"
 
   cmd/install_init: |
     #!/bin/bash
@@ -201,7 +201,7 @@ services:
       - /var/apps/docker-onlyoffice/shares/onlyoffice/fonts:/usr/share/fonts/truetype/custom
 
   onlyoffice-connector:
-    image: xingheliufang/onlyoffice-fnos:main
+    image: lanceloo/onlyoffice-fnos:latest
     container_name: onlyoffice-connector
     networks:
       - onlyoffice-net
