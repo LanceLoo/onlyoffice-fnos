@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type ConvertRequest struct {
 	Outputtype string `json:"outputtype"`
 	Title      string `json:"title"`
 	URL        string `json:"url"`
+	CodePage   *int   `json:"codePage,omitempty"`
+	Delimiter  *int   `json:"delimiter,omitempty"`
 	Token      string `json:"token,omitempty"`
 }
 
@@ -115,6 +118,29 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OnlyOffice requires CSV encoding and delimiter settings to be explicit.
+	// ParseForm makes both POST form values and query parameters available.
+	var codePage, delimiter *int
+	if fileInfo.Extension == "csv" {
+		if err := r.ParseForm(); err != nil {
+			s.respondError(w, http.StatusBadRequest, "Invalid CSV conversion parameters")
+			return
+		}
+
+		parsedCodePage, err := parseCSVConvertParameter(r.FormValue("codePage"), "codePage", 936, 65001)
+		if err != nil {
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		parsedDelimiter, err := parseCSVConvertParameter(r.FormValue("delimiter"), "delimiter", 1, 2, 4)
+		if err != nil {
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		codePage = &parsedCodePage
+		delimiter = &parsedDelimiter
+	}
+
 	// Get target format
 	targetFormat := s.formatManager.GetConvertTarget(fileInfo.Extension)
 	if targetFormat == "" {
@@ -153,8 +179,23 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	// Build download URL for the source file
 	downloadURL := s.buildDownloadURL(filePath)
 
-	// Generate a stable, opaque key that changes when the source file changes.
-	keyMaterial := fmt.Sprintf("%s\x00%s\x00%d", filePath, fileInfo.ModTime.UTC().Format(time.RFC3339Nano), fileInfo.Size)
+	// Generate a stable, opaque key that changes whenever an input that can
+	// affect Document Server's conversion result changes. Non-CSV conversions
+	// use explicit placeholders so their key material remains unambiguous.
+	codePageKeyMaterial, delimiterKeyMaterial := "not-applicable", "not-applicable"
+	if codePage != nil {
+		codePageKeyMaterial = strconv.Itoa(*codePage)
+		delimiterKeyMaterial = strconv.Itoa(*delimiter)
+	}
+	keyMaterial := fmt.Sprintf(
+		"path=%s\x00mtime=%s\x00size=%d\x00targetFormat=%s\x00codePage=%s\x00delimiter=%s",
+		filePath,
+		fileInfo.ModTime.UTC().Format(time.RFC3339Nano),
+		fileInfo.Size,
+		targetFormat,
+		codePageKeyMaterial,
+		delimiterKeyMaterial,
+	)
 	keyHash := sha256.Sum256([]byte(keyMaterial))
 	conversionKey := "convert-" + fmt.Sprintf("%x", keyHash[:])[:24]
 
@@ -166,6 +207,8 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		Outputtype: targetFormat,
 		Title:      fileInfo.Name,
 		URL:        downloadURL,
+		CodePage:   codePage,
+		Delimiter:  delimiter,
 	}
 
 	// Sign request with JWT if secret is configured
@@ -177,6 +220,10 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 			"outputtype": convReq.Outputtype,
 			"title":      convReq.Title,
 			"url":        convReq.URL,
+		}
+		if convReq.CodePage != nil {
+			claims["codePage"] = *convReq.CodePage
+			claims["delimiter"] = *convReq.Delimiter
 		}
 		token, err := s.jwtManager.Sign(s.settings.DocumentServerSecret, claims)
 		if err != nil {
@@ -250,6 +297,23 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		"targetPath": targetPath,
 		"message":    "Conversion successful",
 	})
+}
+
+func parseCSVConvertParameter(value, name string, allowed ...int) (int, error) {
+	if value == "" {
+		return 0, fmt.Errorf("%s is required for CSV conversion", name)
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	for _, allowedValue := range allowed {
+		if parsed == allowedValue {
+			return parsed, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid %s for CSV conversion", name)
 }
 
 func (s *Server) respondAtomicNoReplaceUnsupported(w http.ResponseWriter, sourcePath, targetPath string) {
