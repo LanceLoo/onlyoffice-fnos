@@ -159,7 +159,7 @@ func TestConvertCSVIncludesParametersInJWTClaims(t *testing.T) {
 		JWTManager:    jwt.NewManager(),
 		BaseURL:       "http://localhost:10099",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/convert?path=test.csv&codePage=936&delimiter=2&overwrite=true", nil)
+	req := httptest.NewRequest(http.MethodPost, "/convert?path=test.csv&codePage=950&delimiter=2&overwrite=true", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -177,7 +177,7 @@ func TestConvertCSVIncludesParametersInJWTClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify JWT: %v", err)
 	}
-	if claims["codePage"] != float64(936) || claims["delimiter"] != float64(2) {
+	if claims["codePage"] != float64(950) || claims["delimiter"] != float64(2) {
 		t.Fatalf("CSV settings not included in JWT claims: %#v", claims)
 	}
 }
@@ -263,9 +263,9 @@ func TestConvertCSVConversionKeyVariesWithParameters(t *testing.T) {
 		}
 	}
 
-	convert("936", "4")
+	convert("950", "4")
 	convert("65001", "1")
-	convert("936", "4")
+	convert("950", "4")
 
 	if len(conversionKeys) != 3 {
 		t.Fatalf("expected 3 converter requests, got %d", len(conversionKeys))
@@ -309,6 +309,148 @@ func TestConvertNonCSVDoesNotIncludeCSVParameters(t *testing.T) {
 	}
 	if _, ok := converterBody["delimiter"]; ok {
 		t.Fatalf("non-CSV request unexpectedly includes delimiter: %#v", converterBody)
+	}
+}
+
+func TestConvertTXTIncludesCodePageWithoutJWTFromForm(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var converterBody map[string]interface{}
+	mockDocServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/converter":
+			if err := json.NewDecoder(r.Body).Decode(&converterBody); err != nil {
+				t.Errorf("decode converter request: %v", err)
+			}
+			json.NewEncoder(w).Encode(ConvertResponse{EndConvert: true, FileURL: "http://" + r.Host + "/download"})
+		case "/download":
+			w.Write([]byte("converted"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockDocServer.Close()
+	server := New(&Config{Settings: &config.Settings{DocumentServerURL: mockDocServer.URL}, FileService: file.NewService(tempDir, 0), FormatManager: format.NewManager(), JWTManager: jwt.NewManager(), BaseURL: "http://localhost:10099"})
+	form := url.Values{"path": {"test.txt"}, "codePage": {"65001"}, "overwrite": {"true"}}
+	req := httptest.NewRequest(http.MethodPost, "/convert", bytes.NewBufferString(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if converterBody["codePage"] != float64(65001) {
+		t.Fatalf("TXT codePage not forwarded: %#v", converterBody)
+	}
+	if _, ok := converterBody["delimiter"]; ok {
+		t.Fatalf("TXT converter body unexpectedly includes delimiter: %#v", converterBody)
+	}
+}
+
+func TestConvertTXTIncludesOnlyCodePageInJWTClaims(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var converterBody map[string]interface{}
+	mockDocServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/converter" {
+			json.NewDecoder(r.Body).Decode(&converterBody)
+			json.NewEncoder(w).Encode(ConvertResponse{EndConvert: true, FileURL: "http://" + r.Host + "/download"})
+			return
+		}
+		if r.URL.Path == "/download" {
+			w.Write([]byte("converted"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDocServer.Close()
+	const secret = "txt-test-secret"
+	server := New(&Config{Settings: &config.Settings{DocumentServerURL: mockDocServer.URL, DocumentServerSecret: secret}, FileService: file.NewService(tempDir, 0), FormatManager: format.NewManager(), JWTManager: jwt.NewManager(), BaseURL: "http://localhost:10099"})
+	req := httptest.NewRequest(http.MethodPost, "/convert?path=test.txt&codePage=950&overwrite=true", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(converterBody) != 1 {
+		t.Fatalf("JWT converter body must contain only token: %#v", converterBody)
+	}
+	token, ok := converterBody["token"].(string)
+	if !ok || token == "" {
+		t.Fatalf("missing JWT token: %#v", converterBody)
+	}
+	claims, err := server.jwtManager.Verify(secret, token)
+	if err != nil {
+		t.Fatalf("verify JWT: %v", err)
+	}
+	if claims["codePage"] != float64(950) {
+		t.Fatalf("TXT codePage missing from JWT claims: %#v", claims)
+	}
+	if _, ok := claims["delimiter"]; ok {
+		t.Fatalf("TXT JWT claims unexpectedly include delimiter: %#v", claims)
+	}
+}
+
+func TestConvertTXTRejectsInvalidParameters(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	server, mockServer := createConvertTestServer(t, tempDir, []byte("converted"))
+	defer mockServer.Close()
+	for _, query := range []string{"path=test.txt", "path=test.txt&codePage=", "path=test.txt&codePage=nope", "path=test.txt&codePage=1252", "path=test.txt&codePage=936&delimiter=", "path=test.txt&codePage=936&delimiter=4"} {
+		t.Run(query, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/convert?"+query, nil))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var response map[string]interface{}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response["error"] != float64(http.StatusBadRequest) {
+				t.Fatalf("unexpected JSON error response: %#v", response)
+			}
+		})
+	}
+}
+
+func TestConvertTXTConversionKeyVariesWithCodePage(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	mockDocServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/converter" {
+			var request ConvertRequest
+			json.NewDecoder(r.Body).Decode(&request)
+			keys = append(keys, request.Key)
+			json.NewEncoder(w).Encode(ConvertResponse{EndConvert: true, FileURL: "http://" + r.Host + "/download"})
+			return
+		}
+		if r.URL.Path == "/download" {
+			w.Write([]byte("converted"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDocServer.Close()
+	server := New(&Config{Settings: &config.Settings{DocumentServerURL: mockDocServer.URL}, FileService: file.NewService(tempDir, 0), FormatManager: format.NewManager(), JWTManager: jwt.NewManager(), BaseURL: "http://localhost:10099"})
+	for _, codePage := range []string{"950", "65001", "950"} {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/convert?path=test.txt&codePage="+codePage+"&overwrite=true", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	if len(keys) != 3 || keys[0] == keys[1] || keys[0] != keys[2] {
+		t.Fatalf("unexpected TXT conversion keys: %#v", keys)
 	}
 }
 

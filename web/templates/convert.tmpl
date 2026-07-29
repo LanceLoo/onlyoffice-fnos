@@ -53,8 +53,9 @@
                                             <div class="control">
                                                 <div class="select is-fullwidth">
                                                     <select id="codePage" name="codePage">
-                                                        <option value="936" selected>GBK / CP936</option>
-                                                        <option value="65001">UTF-8</option>
+                                                        <option value="65001" selected>UTF-8（推荐）</option>
+                                                        <option value="936">简体中文 GBK / GB2312</option>
+                                                        <option value="950">繁体中文 Big5</option>
                                                     </select>
                                                 </div>
                                             </div>
@@ -72,6 +73,20 @@
                                                     </select>
                                                 </div>
                                             </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {{end}}
+                                {{if .IsTXT}}
+                                <div class="field mb-3">
+                                    <label class="label is-small" for="codePage">编码</label>
+                                    <div class="control">
+                                        <div class="select is-fullwidth">
+                                            <select id="codePage" name="codePage">
+                                                <option value="65001" selected>UTF-8（推荐）</option>
+                                                <option value="936">简体中文 GBK / GB2312</option>
+                                                <option value="950">繁体中文 Big5</option>
+                                            </select>
                                         </div>
                                     </div>
                                 </div>
@@ -124,12 +139,15 @@
             return input ? input.value : '';
         }
 
-        // CSV encoding/delimiter selectors only exist on CSV conversion pages.
-        function csvConversionParams() {
+        // Text conversion selectors only exist on CSV/TXT conversion pages.
+        // CSV has codePage + delimiter; TXT has codePage only.
+        function textConversionParams() {
+            const params = {};
             const codePage = document.getElementById('codePage');
+            if (codePage) params.codePage = codePage.value;
             const delimiter = document.getElementById('delimiter');
-            if (!codePage || !delimiter) return {};
-            return { codePage: codePage.value, delimiter: delimiter.value };
+            if (delimiter) params.delimiter = delimiter.value;
+            return params;
         }
 
         document.querySelector('form[hx-post="/convert"]').addEventListener('submit', resetCompatState);
@@ -201,7 +219,7 @@
             htmx.ajax('POST', '/convert?overwrite=true', {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -212,7 +230,7 @@
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -233,7 +251,7 @@
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
     </script>

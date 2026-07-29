@@ -31,6 +31,7 @@ type ConvertPageData struct {
 	TargetFormat    string
 	CanDirectEdit   bool
 	IsCSV           bool // Show CSV encoding/delimiter selectors
+	IsTXT           bool // Show TXT encoding selector (txt→docx only)
 	Error           string
 }
 
@@ -251,6 +252,7 @@ func (s *Server) handleConvertPage(w http.ResponseWriter, r *http.Request) {
 		TargetFormat:    targetFormat,
 		CanDirectEdit:   false,
 		IsCSV:           strings.EqualFold(fileInfo.Extension, "csv"),
+		IsTXT:           strings.EqualFold(fileInfo.Extension, "txt") && targetFormat == "docx",
 	}
 
 	// If templates are loaded, use them
@@ -393,20 +395,31 @@ func (s *Server) renderEditorPageFallback(w http.ResponseWriter, data *EditorPag
 
 func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	csvOptions := ""
+	textOptions := ""
 	if data.IsCSV {
-		csvOptions = `
+		textOptions = `
     <div style="text-align:left; margin: 10px 0;">
         <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
         <select id="codePage" name="codePage" style="width:100%; padding:8px; margin-bottom:10px;">
-            <option value="936" selected>GBK / CP936</option>
-            <option value="65001">UTF-8</option>
+            <option value="65001" selected>UTF-8（推荐）</option>
+            <option value="936">简体中文 GBK / GB2312</option>
+            <option value="950">繁体中文 Big5</option>
         </select>
         <label for="delimiter" style="display:block; margin-bottom:4px; font-weight:bold;">分隔符</label>
         <select id="delimiter" name="delimiter" style="width:100%; padding:8px;">
             <option value="4" selected>逗号 (,)</option>
             <option value="1">Tab</option>
             <option value="2">分号 (;)</option>
+        </select>
+    </div>`
+	} else if data.IsTXT {
+		textOptions = `
+    <div style="text-align:left; margin: 10px 0;">
+        <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
+        <select id="codePage" name="codePage" style="width:100%; padding:8px;">
+            <option value="65001" selected>UTF-8（推荐）</option>
+            <option value="936">简体中文 GBK / GB2312</option>
+            <option value="950">繁体中文 Big5</option>
         </select>
     </div>`
 	}
@@ -442,7 +455,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
     <p>格式: ` + data.SourceFormat + ` → ` + data.TargetFormat + `</p>
     <div id="error"></div>
     <form hx-post="/convert" hx-target="#error" hx-swap="innerHTML">
-        <input type="hidden" name="path" value="` + data.FilePath + `">` + csvOptions + `
+        <input type="hidden" name="path" value="` + data.FilePath + `">` + textOptions + `
         <button type="submit" class="btn btn-primary">转换为 ` + data.TargetFormat + ` 并编辑</button>
     </form>
     <a href="/editor?path=` + data.FilePathEncoded + `&mode=view" class="btn btn-secondary">以只读模式查看</a>
@@ -480,12 +493,15 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             return input ? input.value : '';
         }
 
-        // CSV encoding/delimiter selectors only exist on CSV conversion pages.
-        function csvConversionParams() {
+        // Text conversion selectors only exist on CSV/TXT conversion pages.
+        // CSV has codePage + delimiter; TXT has codePage only.
+        function textConversionParams() {
+            const params = {};
             const codePage = document.getElementById('codePage');
+            if (codePage) params.codePage = codePage.value;
             const delimiter = document.getElementById('delimiter');
-            if (!codePage || !delimiter) return {};
-            return { codePage: codePage.value, delimiter: delimiter.value };
+            if (delimiter) params.delimiter = delimiter.value;
+            return params;
         }
 
         document.querySelector('form[hx-post="/convert"]').addEventListener('submit', resetCompatState);
@@ -556,7 +572,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             htmx.ajax('POST', '/convert?overwrite=true', {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -567,7 +583,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -588,7 +604,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: Object.assign({ path: currentSourcePath }, csvConversionParams())
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
     </script>

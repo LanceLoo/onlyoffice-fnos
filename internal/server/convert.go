@@ -118,8 +118,15 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OnlyOffice requires CSV encoding and delimiter settings to be explicit.
-	// ParseForm makes both POST form values and query parameters available.
+	// Get target format
+	targetFormat := s.formatManager.GetConvertTarget(fileInfo.Extension)
+	if targetFormat == "" {
+		s.respondError(w, http.StatusBadRequest, "No conversion target for this format")
+		return
+	}
+
+	// OnlyOffice requires explicit text conversion settings. ParseForm makes
+	// both POST form values and query parameters available.
 	var codePage, delimiter *int
 	if fileInfo.Extension == "csv" {
 		if err := r.ParseForm(); err != nil {
@@ -127,25 +134,33 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		parsedCodePage, err := parseCSVConvertParameter(r.FormValue("codePage"), "codePage", 936, 65001)
+		parsedCodePage, err := parseTextConvertParameter(r.FormValue("codePage"), "codePage", "CSV", 65001, 936, 950)
 		if err != nil {
 			s.respondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		parsedDelimiter, err := parseCSVConvertParameter(r.FormValue("delimiter"), "delimiter", 1, 2, 4)
+		parsedDelimiter, err := parseTextConvertParameter(r.FormValue("delimiter"), "delimiter", "CSV", 1, 2, 4)
 		if err != nil {
 			s.respondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		codePage = &parsedCodePage
 		delimiter = &parsedDelimiter
-	}
-
-	// Get target format
-	targetFormat := s.formatManager.GetConvertTarget(fileInfo.Extension)
-	if targetFormat == "" {
-		s.respondError(w, http.StatusBadRequest, "No conversion target for this format")
-		return
+	} else if fileInfo.Extension == "txt" && targetFormat == "docx" {
+		if err := r.ParseForm(); err != nil {
+			s.respondError(w, http.StatusBadRequest, "Invalid TXT conversion parameters")
+			return
+		}
+		if _, provided := r.Form["delimiter"]; provided {
+			s.respondError(w, http.StatusBadRequest, "delimiter is not supported for TXT conversion")
+			return
+		}
+		parsedCodePage, err := parseTextConvertParameter(r.FormValue("codePage"), "codePage", "TXT", 65001, 936, 950)
+		if err != nil {
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		codePage = &parsedCodePage
 	}
 
 	// Check settings
@@ -185,6 +200,8 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	codePageKeyMaterial, delimiterKeyMaterial := "not-applicable", "not-applicable"
 	if codePage != nil {
 		codePageKeyMaterial = strconv.Itoa(*codePage)
+	}
+	if delimiter != nil {
 		delimiterKeyMaterial = strconv.Itoa(*delimiter)
 	}
 	keyMaterial := fmt.Sprintf(
@@ -223,6 +240,8 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		}
 		if convReq.CodePage != nil {
 			claims["codePage"] = *convReq.CodePage
+		}
+		if convReq.Delimiter != nil {
 			claims["delimiter"] = *convReq.Delimiter
 		}
 		token, err := s.jwtManager.Sign(s.settings.DocumentServerSecret, claims)
@@ -299,9 +318,9 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func parseCSVConvertParameter(value, name string, allowed ...int) (int, error) {
+func parseTextConvertParameter(value, name, conversionType string, allowed ...int) (int, error) {
 	if value == "" {
-		return 0, fmt.Errorf("%s is required for CSV conversion", name)
+		return 0, fmt.Errorf("%s is required for %s conversion", name, conversionType)
 	}
 
 	parsed, err := strconv.Atoi(value)
@@ -313,7 +332,7 @@ func parseCSVConvertParameter(value, name string, allowed ...int) (int, error) {
 			return parsed, nil
 		}
 	}
-	return 0, fmt.Errorf("invalid %s for CSV conversion", name)
+	return 0, fmt.Errorf("invalid %s for %s conversion", name, conversionType)
 }
 
 func (s *Server) respondAtomicNoReplaceUnsupported(w http.ResponseWriter, sourcePath, targetPath string) {

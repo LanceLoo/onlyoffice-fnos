@@ -45,17 +45,17 @@ func assertContainsAll(t *testing.T, body string, snippets ...string) {
 	}
 }
 
-// csvRetryMergeSnippet is the exact JS expression that forwards the CSV
-// encoding/delimiter selection on overwrite, auto-rename, and
+// textRetryMergeSnippet is the exact JS expression that forwards the text
+// conversion (CSV/TXT) selection on overwrite, auto-rename, and
 // compatibility-mode retry requests.
-const csvRetryMergeSnippet = `Object.assign({ path: currentSourcePath }, csvConversionParams())`
+const textRetryMergeSnippet = `Object.assign({ path: currentSourcePath }, textConversionParams())`
 
-// assertCSVRetryPaths asserts that all three retry paths (overwrite,
-// auto-rename, compatibility mode) forward the CSV selection.
-func assertCSVRetryPaths(t *testing.T, body string) {
+// assertTextRetryPaths asserts that all three retry paths (overwrite,
+// auto-rename, compatibility mode) forward the text conversion selection.
+func assertTextRetryPaths(t *testing.T, body string) {
 	t.Helper()
-	if count := strings.Count(body, csvRetryMergeSnippet); count != 3 {
-		t.Fatalf("expected %q on all 3 retry paths, found %d occurrences", csvRetryMergeSnippet, count)
+	if count := strings.Count(body, textRetryMergeSnippet); count != 3 {
+		t.Fatalf("expected %q on all 3 retry paths, found %d occurrences", textRetryMergeSnippet, count)
 	}
 }
 
@@ -69,33 +69,62 @@ func TestConvertPageShowsCSVOptionsWithDefaults(t *testing.T) {
 	body := getConvertPage(t, server, "test.csv")
 	assertContainsAll(t, body,
 		`name="codePage"`,
-		`<option value="936" selected>GBK / CP936</option>`,
-		`<option value="65001">UTF-8</option>`,
+		`<option value="65001" selected>UTF-8（推荐）</option>`,
+		`<option value="936">简体中文 GBK / GB2312</option>`,
+		`<option value="950">繁体中文 Big5</option>`,
 		`name="delimiter"`,
 		`<option value="4" selected>逗号 (,)</option>`,
 		`<option value="1">Tab</option>`,
 		`<option value="2">分号 (;)</option>`,
 		// Retry paths must forward the selected CSV parameters.
-		`csvConversionParams()`,
+		`textConversionParams()`,
 	)
-	assertCSVRetryPaths(t, body)
+	assertTextRetryPaths(t, body)
 }
 
-func TestConvertPageHidesCSVOptionsForNonCSV(t *testing.T) {
+func TestConvertPageShowsTXTOptionsWithDefaults(t *testing.T) {
 	tempDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tempDir, "test.xls"), []byte("old"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("hello\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	server := createPageTestServer(t, tempDir)
 
-	body := getConvertPage(t, server, "test.xls")
-	for _, snippet := range []string{`name="codePage"`, `name="delimiter"`} {
-		if strings.Contains(body, snippet) {
-			t.Fatalf("non-CSV page unexpectedly contains %q", snippet)
-		}
+	body := getConvertPage(t, server, "test.txt")
+	// TXT shows only the encoding selector with UTF-8 as the HTML default.
+	assertContainsAll(t, body,
+		`name="codePage"`,
+		`<option value="65001" selected>UTF-8（推荐）</option>`,
+		`<option value="936">简体中文 GBK / GB2312</option>`,
+		`<option value="950">繁体中文 Big5</option>`,
+		// Retry paths must forward the selected TXT parameters.
+		`textConversionParams()`,
+	)
+	assertTextRetryPaths(t, body)
+	// TXT must never show a delimiter selector.
+	if strings.Contains(body, `name="delimiter"`) {
+		t.Fatal("TXT page unexpectedly contains a delimiter selector")
 	}
-	// Retry helper stays harmless without the selectors.
-	assertContainsAll(t, body, `csvConversionParams()`)
+}
+
+func TestConvertPageHidesTextOptionsForNonText(t *testing.T) {
+	for _, fileName := range []string{"test.xls", "test.doc", "test.rtf", "test.odt"} {
+		t.Run(fileName, func(t *testing.T) {
+			tempDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(tempDir, fileName), []byte("old"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			server := createPageTestServer(t, tempDir)
+
+			body := getConvertPage(t, server, fileName)
+			for _, snippet := range []string{`name="codePage"`, `name="delimiter"`} {
+				if strings.Contains(body, snippet) {
+					t.Fatalf("non-text page unexpectedly contains %q", snippet)
+				}
+			}
+			// Retry helper stays harmless without the selectors.
+			assertContainsAll(t, body, `textConversionParams()`)
+		})
+	}
 }
 
 func TestConvertPageFallbackCSVOptions(t *testing.T) {
@@ -113,12 +142,13 @@ func TestConvertPageFallbackCSVOptions(t *testing.T) {
 	body := rec.Body.String()
 	assertContainsAll(t, body,
 		`name="codePage"`,
-		`<option value="936" selected>GBK / CP936</option>`,
-		`<option value="65001">UTF-8</option>`,
+		`<option value="65001" selected>UTF-8（推荐）</option>`,
+		`<option value="936">简体中文 GBK / GB2312</option>`,
+		`<option value="950">繁体中文 Big5</option>`,
 		`name="delimiter"`,
 		`<option value="4" selected>逗号 (,)</option>`,
 	)
-	assertCSVRetryPaths(t, body)
+	assertTextRetryPaths(t, body)
 
 	rec = httptest.NewRecorder()
 	server.renderConvertPageFallback(rec, &ConvertPageData{
@@ -131,7 +161,48 @@ func TestConvertPageFallbackCSVOptions(t *testing.T) {
 	body = rec.Body.String()
 	for _, snippet := range []string{`name="codePage"`, `name="delimiter"`} {
 		if strings.Contains(body, snippet) {
-			t.Fatalf("non-CSV fallback page unexpectedly contains %q", snippet)
+			t.Fatalf("non-text fallback page unexpectedly contains %q", snippet)
+		}
+	}
+}
+
+func TestConvertPageFallbackTXTOptions(t *testing.T) {
+	server := &Server{}
+
+	rec := httptest.NewRecorder()
+	server.renderConvertPageFallback(rec, &ConvertPageData{
+		FileName:        "test.txt",
+		FilePath:        "test.txt",
+		FilePathEncoded: "test.txt",
+		SourceFormat:    "txt",
+		TargetFormat:    "docx",
+		IsTXT:           true,
+	})
+	body := rec.Body.String()
+	assertContainsAll(t, body,
+		`name="codePage"`,
+		`<option value="65001" selected>UTF-8（推荐）</option>`,
+		`<option value="936">简体中文 GBK / GB2312</option>`,
+		`<option value="950">繁体中文 Big5</option>`,
+	)
+	assertTextRetryPaths(t, body)
+	if strings.Contains(body, `name="delimiter"`) {
+		t.Fatal("TXT fallback page unexpectedly contains a delimiter selector")
+	}
+
+	// A docx-targeting word format (e.g. doc) must not be treated as TXT.
+	rec = httptest.NewRecorder()
+	server.renderConvertPageFallback(rec, &ConvertPageData{
+		FileName:        "test.doc",
+		FilePath:        "test.doc",
+		FilePathEncoded: "test.doc",
+		SourceFormat:    "doc",
+		TargetFormat:    "docx",
+	})
+	body = rec.Body.String()
+	for _, snippet := range []string{`name="codePage"`, `name="delimiter"`} {
+		if strings.Contains(body, snippet) {
+			t.Fatalf("doc fallback page unexpectedly contains %q", snippet)
 		}
 	}
 }
