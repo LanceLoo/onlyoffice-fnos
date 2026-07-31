@@ -57,7 +57,7 @@ func TestProperty4_FormatConversionMapping(t *testing.T) {
 // Unit test: Verify all editable formats
 func TestEditableFormats(t *testing.T) {
 	m := NewManager()
-	editableFormats := []string{"docx", "xlsx", "pptx"}
+	editableFormats := []string{"docx", "xlsx", "pptx", "pdf"}
 
 	for _, ext := range editableFormats {
 		if !m.IsEditable(ext) {
@@ -69,12 +69,28 @@ func TestEditableFormats(t *testing.T) {
 // Unit test: Verify view-only formats
 func TestViewOnlyFormats(t *testing.T) {
 	m := NewManager()
-	viewOnlyFormats := []string{"pdf", "djvu", "oxps", "epub", "fb2"}
+	viewOnlyFormats := []string{"djvu", "oxps", "epub", "fb2"}
 
 	for _, ext := range viewOnlyFormats {
 		if !m.IsViewOnly(ext) {
 			t.Errorf("format %s should be view-only", ext)
 		}
+	}
+}
+
+func TestPDFFormatProperties(t *testing.T) {
+	formatInfo, ok := NewManager().GetFormat("pdf")
+	if !ok {
+		t.Fatal("PDF format should be registered")
+	}
+	if !formatInfo.Editable {
+		t.Error("PDF should be editable")
+	}
+	if formatInfo.ViewOnly {
+		t.Error("PDF should not be view-only")
+	}
+	if formatInfo.Type != "pdf" {
+		t.Errorf("PDF document type should be pdf, got %q", formatInfo.Type)
 	}
 }
 
@@ -92,6 +108,7 @@ func TestDocumentTypes(t *testing.T) {
 		{"xls", "cell"},
 		{"pptx", "slide"},
 		{"ppt", "slide"},
+		{"pdf", "pdf"},
 	}
 
 	for _, tt := range tests {

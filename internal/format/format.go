@@ -12,7 +12,7 @@ var (
 // Format represents a file format with its properties
 type Format struct {
 	Extension     string `json:"extension"`
-	Type          string `json:"type"` // word, cell, slide
+	Type          string `json:"type"` // word, cell, slide, pdf
 	Editable      bool   `json:"editable"`
 	ViewOnly      bool   `json:"viewOnly"`
 	Convertible   bool   `json:"convertible"`
@@ -55,8 +55,10 @@ func (m *Manager) initFormats() {
 	m.formats["ppt"] = &Format{Extension: "ppt", Type: "slide", Convertible: true, ConvertTarget: "pptx"}
 	m.formats["odp"] = &Format{Extension: "odp", Type: "slide", Convertible: true, ConvertTarget: "pptx"}
 
+	// Editable PDF format
+	m.formats["pdf"] = &Format{Extension: "pdf", Type: "pdf", Editable: true}
+
 	// View-only formats
-	m.formats["pdf"] = &Format{Extension: "pdf", Type: "word", ViewOnly: true}
 	m.formats["djvu"] = &Format{Extension: "djvu", Type: "word", ViewOnly: true}
 	m.formats["oxps"] = &Format{Extension: "oxps", Type: "word", ViewOnly: true}
 	m.formats["epub"] = &Format{Extension: "epub", Type: "word", ViewOnly: true}
@@ -106,7 +108,7 @@ func (m *Manager) GetConvertTarget(extension string) string {
 	return f.ConvertTarget
 }
 
-// GetDocumentType returns the document type (word, cell, slide) for a given extension
+// GetDocumentType returns the document type (word, cell, slide, pdf) for a given extension
 func (m *Manager) GetDocumentType(extension string) string {
 	f, ok := m.GetFormat(extension)
 	if !ok {
