@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net"
@@ -325,8 +326,11 @@ func (s *Server) buildEditorConfig(req *editorConfigRequest) (map[string]interfa
 	// Build download URL
 	downloadURL := s.buildDownloadURL(req.FilePath)
 
-	// Build callback URL
-	callbackURL := s.buildCallbackURL(req.FilePath)
+	// Issue a capability bound to this document rather than exposing its path.
+	callbackURL, err := s.buildCallbackURL(docKey, req.FilePath, req.FileInfo.Extension)
+	if err != nil {
+		return nil, fmt.Errorf("build callback URL: %w", err)
+	}
 
 	config := map[string]interface{}{
 		"document": map[string]interface{}{
@@ -364,10 +368,18 @@ func (s *Server) buildEditorConfig(req *editorConfigRequest) (map[string]interfa
 	return config, nil
 }
 
-// buildCallbackURL builds the callback URL for a file
-func (s *Server) buildCallbackURL(filePath string) string {
+// buildCallbackURL builds a capability-protected callback URL for a document.
+func (s *Server) buildCallbackURL(key, filePath, fileType string) (string, error) {
 	baseURL := s.getEffectiveBaseURL()
-	return baseURL + "/callback?path=" + url.QueryEscape(filePath)
+	canonicalPath, err := s.fileService.CanonicalPath(filePath)
+	if err != nil {
+		return "", err
+	}
+	session, err := s.issueCallbackSession(key, canonicalPath, fileType)
+	if err != nil {
+		return "", err
+	}
+	return baseURL + "/callback?session=" + url.QueryEscape(session), nil
 }
 
 // Fallback renderers for when templates are not available

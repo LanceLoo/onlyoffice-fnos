@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,75 @@ func assertTextRetryPaths(t *testing.T, body string) {
 	t.Helper()
 	if count := strings.Count(body, textRetryMergeSnippet); count != 3 {
 		t.Fatalf("expected %q on all 3 retry paths, found %d occurrences", textRetryMergeSnippet, count)
+	}
+}
+
+func TestBuildEditorConfigPDF(t *testing.T) {
+	server := createPageTestServer(t, t.TempDir())
+	fileInfo := &file.FileInfo{
+		Path:      "document.pdf",
+		Name:      "document.pdf",
+		Extension: "pdf",
+	}
+
+	for _, test := range []struct {
+		name     string
+		viewMode bool
+		canEdit  bool
+		mode     string
+	}{
+		{name: "editable by default", canEdit: true, mode: "edit"},
+		{name: "view mode is read-only", viewMode: true, canEdit: false, mode: "view"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := server.buildEditorConfig(&editorConfigRequest{
+				FilePath: "document.pdf",
+				FileInfo: fileInfo,
+				ViewMode: test.viewMode,
+			})
+			if err != nil {
+				t.Fatalf("buildEditorConfig returned an error: %v", err)
+			}
+
+			if documentType, ok := config["documentType"].(string); !ok || documentType != "pdf" {
+				t.Errorf("documentType = %#v, want pdf", config["documentType"])
+			}
+			document := config["document"].(map[string]interface{})
+			if got := document["fileType"]; got != "pdf" {
+				t.Errorf("document.fileType = %#v, want pdf", got)
+			}
+			permissions := document["permissions"].(map[string]interface{})
+			if got := permissions["edit"]; got != test.canEdit {
+				t.Errorf("permissions.edit = %#v, want %t", got, test.canEdit)
+			}
+			editorConfig := config["editorConfig"].(map[string]interface{})
+			if got := editorConfig["mode"]; got != test.mode {
+				t.Errorf("editorConfig.mode = %#v, want %q", got, test.mode)
+			}
+			callbackURL, ok := editorConfig["callbackUrl"].(string)
+			if !ok {
+				t.Fatal("callbackUrl is missing")
+			}
+			parsedURL, err := url.Parse(callbackURL)
+			if err != nil {
+				t.Fatalf("invalid callback URL: %v", err)
+			}
+			if parsedURL.Query().Get("path") != "" || parsedURL.Query().Get("session") == "" {
+				t.Fatalf("callback URL must contain only a session capability, got %q", callbackURL)
+			}
+			documentKey := document["key"].(string)
+			session, err := server.verifyCallbackSession(parsedURL.Query().Get("session"))
+			if err != nil {
+				t.Fatalf("callback URL session is invalid: %v", err)
+			}
+			canonicalPath, err := server.fileService.CanonicalPath(fileInfo.Path)
+			if err != nil {
+				t.Fatalf("canonicalize file path: %v", err)
+			}
+			if session.Key != documentKey || session.Path != canonicalPath || session.FileType != "pdf" {
+				t.Errorf("session = %#v, not bound to PDF document", session)
+			}
+		})
 	}
 }
 

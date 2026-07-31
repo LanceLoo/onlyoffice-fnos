@@ -61,3 +61,22 @@ func TestResolvePathRejectsPathsOutsideBasePath(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalPathUsesFileServiceRules(t *testing.T) {
+	base := t.TempDir()
+	service := NewService(base, 0)
+	relative, err := service.CanonicalPath(filepath.Join("nested", "..", "result.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute, err := service.CanonicalPath(filepath.Join(base, "result.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relative != absolute {
+		t.Fatalf("equivalent paths differ: %q != %q", relative, absolute)
+	}
+	if _, err := service.CanonicalPath(filepath.Join(base, "..", "outside.txt")); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("outside path error = %v, want ErrInvalidPath", err)
+	}
+}

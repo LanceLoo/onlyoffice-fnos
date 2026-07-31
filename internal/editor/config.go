@@ -17,7 +17,7 @@ import (
 // EditorConfig represents the complete OnlyOffice editor configuration
 type EditorConfig struct {
 	Document     DocumentConfig    `json:"document"`
-	DocumentType string            `json:"documentType"` // word, cell, slide
+	DocumentType string            `json:"documentType"` // word, cell, slide, pdf
 	EditorConfig EditorConfigInner `json:"editorConfig"`
 	Token        string            `json:"token,omitempty"`
 }
@@ -54,13 +54,14 @@ type UserConfig struct {
 
 // ConfigRequest represents a request to build editor configuration
 type ConfigRequest struct {
-	FilePath  string
-	FileInfo  *file.FileInfo
-	UserID    string
-	UserName  string
-	Lang      string
-	BaseURL   string // Base URL for download and callback endpoints
-	JWTSecret string
+	FilePath    string
+	FileInfo    *file.FileInfo
+	UserID      string
+	UserName    string
+	Lang        string
+	BaseURL     string // Base URL for download endpoint
+	CallbackURL string // Capability-protected callback URL supplied by the server
+	JWTSecret   string
 }
 
 // ConfigBuilder builds OnlyOffice editor configurations
@@ -102,8 +103,9 @@ func (b *ConfigBuilder) BuildConfig(req *ConfigRequest) (*EditorConfig, error) {
 	// Build download URL
 	downloadURL := b.buildDownloadURL(req.BaseURL, req.FilePath)
 
-	// Build callback URL
-	callbackURL := b.buildCallbackURL(req.BaseURL, req.FilePath)
+	if req.CallbackURL == "" {
+		return nil, fmt.Errorf("callback URL is required")
+	}
 
 	// Normalize language code
 	lang := b.normalizeLanguage(req.Lang)
@@ -132,7 +134,7 @@ func (b *ConfigBuilder) BuildConfig(req *ConfigRequest) (*EditorConfig, error) {
 		},
 		DocumentType: formatInfo.Type,
 		EditorConfig: EditorConfigInner{
-			CallbackURL: callbackURL,
+			CallbackURL: req.CallbackURL,
 			Lang:        lang,
 			Mode:        mode,
 			User: UserConfig{
@@ -175,20 +177,6 @@ func (b *ConfigBuilder) buildDownloadURL(baseURL, filePath string) string {
 	// URL encode the file path
 	encodedPath := url.QueryEscape(filePath)
 	return fmt.Sprintf("%s/download?path=%s", baseURL, encodedPath)
-}
-
-// buildCallbackURL builds the callback URL for document saving
-func (b *ConfigBuilder) buildCallbackURL(baseURL, filePath string) string {
-	if baseURL == "" {
-		// This should not happen if properly configured
-		// Log a warning in production
-		baseURL = "http://localhost:10099"
-	}
-	// Ensure baseURL doesn't have trailing slash
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	// URL encode the file path
-	encodedPath := url.QueryEscape(filePath)
-	return fmt.Sprintf("%s/callback?path=%s", baseURL, encodedPath)
 }
 
 // normalizeLanguage normalizes the language code

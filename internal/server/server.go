@@ -2,10 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"io/fs"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,16 +23,28 @@ import (
 	"onlyoffice-fnos/web"
 )
 
+const (
+	// RegularRequestTimeout bounds normal web and API requests.
+	RegularRequestTimeout = 60 * time.Second
+	// CallbackTimeout allows Document Server callbacks to download large documents.
+	CallbackTimeout = 5 * time.Minute
+)
+
 // Server represents the HTTP server
 type Server struct {
-	router        *chi.Mux
-	settings      *config.Settings
-	fileService   *file.Service
-	formatManager *format.Manager
-	jwtManager    *jwt.Manager
-	configBuilder *editor.ConfigBuilder
-	baseURL       string
-	templates     *templates
+	router          *chi.Mux
+	settings        *config.Settings
+	fileService     *file.Service
+	formatManager   *format.Manager
+	jwtManager      *jwt.Manager
+	configBuilder   *editor.ConfigBuilder
+	baseURL         string
+	templates       *templates
+	callbackSecret  []byte
+	callbackLocks   map[string]*callbackPathLock
+	callbackLocksMu sync.Mutex
+	now             func() time.Time
+	documentClient  *http.Client
 }
 
 // Config holds server configuration
@@ -43,12 +59,26 @@ type Config struct {
 // New creates a new Server instance
 func New(cfg *Config) *Server {
 	s := &Server{
-		router:        chi.NewRouter(),
-		settings:      cfg.Settings,
-		fileService:   cfg.FileService,
-		formatManager: cfg.FormatManager,
-		jwtManager:    cfg.JWTManager,
-		baseURL:       cfg.BaseURL,
+		router:         chi.NewRouter(),
+		settings:       cfg.Settings,
+		fileService:    cfg.FileService,
+		formatManager:  cfg.FormatManager,
+		jwtManager:     cfg.JWTManager,
+		baseURL:        cfg.BaseURL,
+		callbackLocks:  make(map[string]*callbackPathLock),
+		now:            time.Now,
+		documentClient: &http.Client{Timeout: CallbackTimeout},
+	}
+	if cfg.Settings != nil && cfg.Settings.DocumentServerSecret != "" {
+		mac := hmac.New(sha256.New, []byte(cfg.Settings.DocumentServerSecret))
+		mac.Write([]byte("onlyoffice-fnos/callback-session/v1"))
+		s.callbackSecret = mac.Sum(nil)
+	} else {
+		s.callbackSecret = make([]byte, sha256.Size)
+		if _, err := rand.Read(s.callbackSecret); err != nil {
+			panic("generate callback session secret: " + err.Error())
+		}
+		log.Printf("SECURITY WARNING: Document Server JWT is disabled; callback sessions use a process-local secret and production deployments must enable JWT with matching connector and Document Server secrets")
 	}
 
 	// Use baseURL from settings if available
@@ -73,8 +103,6 @@ func New(cfg *Config) *Server {
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.RealIP)
-	s.router.Use(middleware.Timeout(60 * time.Second))
-
 	// Setup routes
 	s.setupRoutes()
 
@@ -83,22 +111,25 @@ func New(cfg *Config) *Server {
 
 // setupRoutes configures all HTTP routes
 func (s *Server) setupRoutes() {
+	regular := s.router.With(middleware.Timeout(RegularRequestTimeout))
+	callback := s.router.With(middleware.Timeout(CallbackTimeout))
+
 	// Embedded static files
 	staticFS, err := fs.Sub(web.Static, "static")
 	if err != nil {
 		log.Printf("Warning: failed to get static sub-filesystem: %v", err)
 	} else {
-		s.router.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+		regular.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	}
 
 	// Page routes
-	s.router.Get("/editor", s.handleEditorPage)
-	s.router.Get("/convert", s.handleConvertPage)
+	regular.Get("/editor", s.handleEditorPage)
+	regular.Get("/convert", s.handleConvertPage)
 
 	// Document Server integration routes
-	s.router.Get("/download", s.handleDownload)
-	s.router.Post("/callback", s.handleCallback)
-	s.router.Post("/convert", s.handleConvert)
+	regular.Get("/download", s.handleDownload)
+	callback.Post("/callback", s.handleCallback)
+	regular.Post("/convert", s.handleConvert)
 }
 
 // Router returns the chi router for testing

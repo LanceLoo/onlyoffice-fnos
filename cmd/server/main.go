@@ -21,6 +21,7 @@ import (
 const (
 	defaultPort     = "10099"
 	shutdownTimeout = 10 * time.Second
+	writeTimeout    = server.CallbackTimeout + 30*time.Second
 )
 
 func main() {
@@ -77,7 +78,7 @@ func main() {
 		Addr:         ":" + *port,
 		Handler:      srv,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
