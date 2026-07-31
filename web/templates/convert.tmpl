@@ -45,6 +45,52 @@
 
                             <form hx-post="/convert" hx-target="#error" hx-swap="innerHTML">
                                 <input type="hidden" name="path" value="{{.FilePath}}">
+                                {{if .IsCSV}}
+                                <div class="columns is-mobile is-variable is-2 mb-3">
+                                    <div class="column">
+                                        <div class="field">
+                                            <label class="label is-small" for="codePage">编码</label>
+                                            <div class="control">
+                                                <div class="select is-fullwidth">
+                                                    <select id="codePage" name="codePage">
+                                                        <option value="65001" selected>UTF-8（推荐）</option>
+                                                        <option value="936">简体中文 GBK / GB2312</option>
+                                                        <option value="950">繁体中文 Big5</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="column">
+                                        <div class="field">
+                                            <label class="label is-small" for="delimiter">分隔符</label>
+                                            <div class="control">
+                                                <div class="select is-fullwidth">
+                                                    <select id="delimiter" name="delimiter">
+                                                        <option value="4" selected>逗号 (,)</option>
+                                                        <option value="1">Tab</option>
+                                                        <option value="2">分号 (;)</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {{end}}
+                                {{if .IsTXT}}
+                                <div class="field mb-3">
+                                    <label class="label is-small" for="codePage">编码</label>
+                                    <div class="control">
+                                        <div class="select is-fullwidth">
+                                            <select id="codePage" name="codePage">
+                                                <option value="65001" selected>UTF-8（推荐）</option>
+                                                <option value="936">简体中文 GBK / GB2312</option>
+                                                <option value="950">繁体中文 Big5</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                {{end}}
                                 <button type="submit" class="button is-primary is-fullwidth is-medium mb-3">转换为 {{.TargetFormat}} 并编辑</button>
                             </form>
                             <a href="/editor?path={{.FilePath}}&mode=view" class="button is-light is-fullwidth is-medium mb-5">以只读模式查看</a>
@@ -91,6 +137,17 @@
             if (resp && resp.sourcePath) return resp.sourcePath;
             const input = document.querySelector('input[name="path"]');
             return input ? input.value : '';
+        }
+
+        // Text conversion selectors only exist on CSV/TXT conversion pages.
+        // CSV has codePage + delimiter; TXT has codePage only.
+        function textConversionParams() {
+            const params = {};
+            const codePage = document.getElementById('codePage');
+            if (codePage) params.codePage = codePage.value;
+            const delimiter = document.getElementById('delimiter');
+            if (delimiter) params.delimiter = delimiter.value;
+            return params;
         }
 
         document.querySelector('form[hx-post="/convert"]').addEventListener('submit', resetCompatState);
@@ -162,7 +219,7 @@
             htmx.ajax('POST', '/convert?overwrite=true', {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: currentSourcePath }
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -173,7 +230,7 @@
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: currentSourcePath }
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
 
@@ -194,7 +251,7 @@
             htmx.ajax('POST', '/convert' + params, {
                 target: '#error',
                 swap: 'innerHTML',
-                values: { path: currentSourcePath }
+                values: Object.assign({ path: currentSourcePath }, textConversionParams())
             });
         }
     </script>

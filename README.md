@@ -1,6 +1,6 @@
 # OnlyOffice fnOS Connector
 
-在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX 等格式的在线编辑，以及 DOC、XLS、PPT、ODT、ODS、ODP 等格式的转换和查看。
+在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX 在线编辑；支持 DOC、ODT、RTF、TXT、XLS、ODS、CSV、PPT、ODP 转换为对应的 OOXML 格式；并支持 PDF、DJVU、OXPS、EPUB、FB2 只读查看。
 
 这是基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 的 Docker 化 fnOS 文件连接器 fork；不计划开发原生 fnOS 应用。
 
@@ -11,8 +11,9 @@
 ## 功能特性
 
 - **在线编辑**: 直接在浏览器中编辑 DOCX、XLSX、PPTX 文档
-- **格式转换**: 自动将旧格式 (DOC/XLS/PPT) 转换为 OOXML 格式
-- **文档查看**: 支持 PDF、EPUB、FB2 等格式的在线预览
+- **格式转换**: 支持 DOC、ODT、RTF、TXT 转换为 DOCX，XLS、ODS、CSV 转换为 XLSX，以及 PPT、ODP 转换为 PPTX
+- **文本导入选项**: CSV 转换可选择编码和分隔符；TXT 转换可选择编码
+- **文档查看**: 支持 PDF、DJVU、OXPS、EPUB、FB2 等格式的只读预览
 - **JWT 安全**: 支持 JWT 签名验证，确保文档传输安全
 - **fnOS 集成**: 面向飞牛 NAS（fnOS）适配的应用连接器
 
@@ -20,7 +21,7 @@
 
 | 类型 | 可编辑 | 可转换 | 仅查看 |
 |------|--------|--------|--------|
-| 文档 | docx | doc, odt, rtf, txt | pdf, djvu, epub, fb2 |
+| 文档 | docx | doc, odt, rtf, txt | pdf, djvu, oxps, epub, fb2 |
 | 表格 | xlsx | xls, ods, csv | - |
 | 演示 | pptx | ppt, odp | - |
 
