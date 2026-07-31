@@ -42,6 +42,22 @@ configs:
                   proxy_set_header X-Forwarded-Proto $$the_scheme;
               }
 
+              # Compose uses the internal connector callback URL by default.
+              # This protects reverse-proxied or custom callback URLs.
+              location = /callback {
+                  proxy_pass http://connector;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $$http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $$host;
+                  proxy_set_header X-Real-IP $$remote_addr;
+                  proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $$the_scheme;
+                  proxy_connect_timeout 30s;
+                  proxy_read_timeout 330s;
+                  proxy_send_timeout 330s;
+              }
+
               location / {
                   proxy_pass http://connector;
                   proxy_http_version 1.1;
