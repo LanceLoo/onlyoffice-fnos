@@ -411,7 +411,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
 	if data.IsCSV {
 		textOptions = `
     <details class="convert-advanced">
-        <summary>高级设置（编码与分隔符 · 默认 UTF-8 / 逗号）</summary>
+        <summary>转换设置（编码与分隔符 · 默认 UTF-8 / 逗号）</summary>
         <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
         <select id="codePage" name="codePage" style="width:100%; padding:8px; margin-bottom:10px;">
             <option value="65001" selected>UTF-8（推荐）</option>
@@ -428,7 +428,7 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
 	} else if data.IsTXT {
 		textOptions = `
     <details class="convert-advanced">
-        <summary>高级设置（编码 · 默认 UTF-8）</summary>
+        <summary>转换设置（编码 · 默认 UTF-8）</summary>
         <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
         <select id="codePage" name="codePage" style="width:100%; padding:8px;">
             <option value="65001" selected>UTF-8（推荐）</option>

@@ -164,7 +164,7 @@ func TestConvertPageShowsCSVOptionsWithDefaults(t *testing.T) {
 		// Retry paths must forward the selected CSV parameters.
 		`textConversionParams()`,
 	)
-	assertTextConversionAdvancedSettings(t, body, `高级设置（编码与分隔符 · 默认 UTF-8 / 逗号）`)
+	assertTextConversionAdvancedSettings(t, body, `转换设置（编码与分隔符 · 默认 UTF-8 / 逗号）`)
 	assertTextRetryPaths(t, body)
 }
 
@@ -185,7 +185,7 @@ func TestConvertPageShowsTXTOptionsWithDefaults(t *testing.T) {
 		// Retry paths must forward the selected TXT parameters.
 		`textConversionParams()`,
 	)
-	assertTextConversionAdvancedSettings(t, body, `高级设置（编码 · 默认 UTF-8）`)
+	assertTextConversionAdvancedSettings(t, body, `转换设置（编码 · 默认 UTF-8）`)
 	assertTextRetryPaths(t, body)
 	// TXT must never show a delimiter selector.
 	if strings.Contains(body, `name="delimiter"`) {
@@ -235,7 +235,7 @@ func TestConvertPageFallbackCSVOptions(t *testing.T) {
 		`name="delimiter"`,
 		`<option value="4" selected>逗号 (,)</option>`,
 	)
-	assertTextConversionAdvancedSettings(t, body, `高级设置（编码与分隔符 · 默认 UTF-8 / 逗号）`)
+	assertTextConversionAdvancedSettings(t, body, `转换设置（编码与分隔符 · 默认 UTF-8 / 逗号）`)
 	assertTextRetryPaths(t, body)
 
 	rec = httptest.NewRecorder()
@@ -273,7 +273,7 @@ func TestConvertPageFallbackTXTOptions(t *testing.T) {
 		`<option value="936">简体中文 GBK / GB2312</option>`,
 		`<option value="950">繁体中文 Big5</option>`,
 	)
-	assertTextConversionAdvancedSettings(t, body, `高级设置（编码 · 默认 UTF-8）`)
+	assertTextConversionAdvancedSettings(t, body, `转换设置（编码 · 默认 UTF-8）`)
 	assertTextRetryPaths(t, body)
 	if strings.Contains(body, `name="delimiter"`) {
 		t.Fatal("TXT fallback page unexpectedly contains a delimiter selector")
