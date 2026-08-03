@@ -2,7 +2,7 @@
 
 在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX、PDF 在线编辑；支持 DOC、ODT、RTF、TXT、XLS、ODS、CSV、PPT、ODP 转换为对应的 OOXML 格式；DJVU、OXPS、EPUB、FB2 支持只读查看。
 
-这是基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 的 Docker 化 fnOS 文件连接器 fork；不计划开发原生 fnOS 应用。
+本项目基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 持续开发，现作为独立项目维护；不计划开发原生 fnOS 应用。
 
 > ⚠️ **早期开发阶段**
 > 
@@ -128,13 +128,12 @@ go test ./...
 
 MIT License
 
-本项目基于上游项目 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos)，其 README 声明采用 MIT License。本 fork 保留上游的署名和许可证声明；本 fork 的变更记录见项目历史。本项目与 fnOS 及 ONLYOFFICE 均无官方关联或背书关系。
-
 ### 第三方组件与商标
 
 [ONLYOFFICE Docs（Document Server）](https://github.com/ONLYOFFICE/DocumentServer) 是独立发布的第三方组件；其开源版本及不同发行版的许可证、商用条款和使用条件请以官方项目说明为准。ONLYOFFICE、fnOS 及相关名称和标识属于各自权利人的商标或品牌。
 
 ## 致谢
 
+- [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) — 项目基础与开源贡献
 - [OnlyOffice Document Server](https://github.com/ONLYOFFICE/DocumentServer)
 - [飞牛 NAS (fnOS)](https://www.fnnas.com/)
