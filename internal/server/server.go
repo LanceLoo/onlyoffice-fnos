@@ -99,7 +99,7 @@ func New(cfg *Config) *Server {
 	}
 
 	// Setup middleware
-	s.router.Use(middleware.Logger)
+	s.router.Use(accessLogger)
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.RealIP)
@@ -107,6 +107,34 @@ func New(cfg *Config) *Server {
 	s.setupRoutes()
 
 	return s
+}
+
+// accessLogger records request metadata without exposing callback capabilities.
+// Callback sessions are passed in the query string, so their request URI must
+// never be written to the application access log.
+func accessLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		started := time.Now()
+		requestTarget := safeRequestTarget(r)
+		next.ServeHTTP(ww, r)
+
+		log.Printf("HTTP %s %s status=%d bytes=%d duration=%s remote=%s", r.Method, requestTarget, ww.Status(), ww.BytesWritten(), time.Since(started).Round(time.Millisecond), r.RemoteAddr)
+	})
+}
+
+func safeRequestTarget(r *http.Request) string {
+	requestTarget := r.URL.RequestURI()
+	query := r.URL.Query()
+	if _, hasSession := query["session"]; !hasSession {
+		return requestTarget
+	}
+
+	query.Del("session")
+	if encodedQuery := query.Encode(); encodedQuery != "" {
+		return r.URL.EscapedPath() + "?" + encodedQuery
+	}
+	return r.URL.EscapedPath()
 }
 
 // setupRoutes configures all HTTP routes

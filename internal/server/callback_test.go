@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -185,9 +187,79 @@ func TestCallbackSessionValidation(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 	expiredURL := callbackURL(t, s, "key", path, "pdf")
+	if got := callbackSessionTTL; got != 24*time.Hour {
+		t.Fatalf("callback session TTL = %v, want 24h", got)
+	}
 	now = now.Add(callbackSessionTTL + time.Second)
 	if response := postCallback(t, s, expiredURL, valid); response.Error != 1 {
 		t.Fatalf("expired callback returned %d", response.Error)
+	}
+}
+
+func TestCallbackRejectsUnknownStatus(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "document.docx")
+
+	t.Run("without JWT", func(t *testing.T) {
+		s := createTestServer(t, directory, "")
+		response := postCallback(t, s, callbackURL(t, s, "key", path, "docx"), CallbackRequest{Key: "key", Status: CallbackStatus(5)})
+		if response.Error != 1 {
+			t.Fatalf("unknown callback status returned %d, want 1", response.Error)
+		}
+	})
+
+	t.Run("from JWT", func(t *testing.T) {
+		const secret = "test-secret"
+		s := createTestServer(t, directory, secret)
+		token, err := s.jwtManager.Sign(secret, map[string]interface{}{"key": "key", "status": 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := postCallback(t, s, callbackURL(t, s, "key", path, "docx"), CallbackRequest{Key: "key", Status: StatusEditing, Token: token})
+		if response.Error != 1 {
+			t.Fatalf("unknown JWT callback status returned %d, want 1", response.Error)
+		}
+	})
+}
+
+func TestAccessLoggerRedactsCallbackSession(t *testing.T) {
+	directory := t.TempDir()
+	s := createTestServer(t, directory, "")
+	callbackTarget := callbackURL(t, s, "key", filepath.Join(directory, "document.docx"), "docx")
+	callbackParts := strings.SplitN(callbackTarget, "?", 2)
+	if len(callbackParts) != 2 {
+		t.Fatalf("callback target has no query: %q", callbackTarget)
+	}
+	session := strings.TrimPrefix(callbackParts[1], "session=")
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	if response := postCallback(t, s, callbackTarget, CallbackRequest{Key: "key", Status: StatusEditing}); response.Error != 0 {
+		t.Fatalf("callback returned %d", response.Error)
+	}
+	for _, target := range []string{
+		"/callback/?session=" + session,
+		"/callback/extra?visible=value&session=" + session,
+		"/missing?session=" + session,
+	} {
+		s.Router().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+	}
+	s.Router().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/static/missing.css?visible=value", nil))
+
+	output := logs.String()
+	if strings.Contains(output, "session=") || strings.Contains(output, session) || strings.Contains(output, callbackTarget) {
+		t.Fatalf("callback session appeared in access log: %q", output)
+	}
+	if !strings.Contains(output, "/static/missing.css?visible=value") {
+		t.Fatalf("non-callback request was not observable in access log: %q", output)
 	}
 }
 

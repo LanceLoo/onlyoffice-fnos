@@ -17,7 +17,7 @@ import (
 	jwtpkg "onlyoffice-fnos/internal/jwt"
 )
 
-const callbackSessionTTL = 7 * 24 * time.Hour
+const callbackSessionTTL = 24 * time.Hour
 const callbackMaxBodyBytes = 1 << 20
 
 type callbackSession struct {
@@ -43,6 +43,15 @@ const (
 	StatusForceSave      CallbackStatus = 6
 	StatusForceSaveError CallbackStatus = 7
 )
+
+func isAllowedCallbackStatus(status CallbackStatus) bool {
+	switch status {
+	case StatusEditing, StatusSaved, StatusSaveError, StatusClosed, StatusForceSave, StatusForceSaveError:
+		return true
+	default:
+		return false
+	}
+}
 
 type CallbackAction struct {
 	Type   int    `json:"type"`
@@ -141,6 +150,9 @@ func callbackRequestFromClaims(claims map[string]interface{}) (CallbackRequest, 
 		return CallbackRequest{}, fmt.Errorf("invalid callback JWT claims")
 	}
 	req := CallbackRequest{Key: key, Status: CallbackStatus(statusValue)}
+	if !isAllowedCallbackStatus(req.Status) {
+		return CallbackRequest{}, fmt.Errorf("unsupported callback status")
+	}
 	if url, ok := claims["url"].(string); ok {
 		req.URL = url
 	}
@@ -196,6 +208,10 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !isAllowedCallbackStatus(req.Status) {
+		s.callbackError(w, "unsupported callback status")
+		return
+	}
 	if req.Key != session.Key {
 		s.callbackError(w, "callback key does not match session")
 		return
@@ -213,7 +229,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		}()
 		err := saveErr
 		if err != nil {
-			s.callbackError(w, fmt.Sprintf("failed to save document: %v", err))
+			// Save errors can include document URLs or file paths; do not expose them in logs.
+			s.callbackError(w, "failed to save document")
 			return
 		}
 	}
