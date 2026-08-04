@@ -168,6 +168,12 @@ func (s *Service) SaveFile(path string, content io.Reader) error {
 	return nil
 }
 
+// CanonicalPath resolves a logical path using the same base-path and fnOS
+// volume rules enforced by all file operations.
+func (s *Service) CanonicalPath(path string) (string, error) {
+	return s.resolvePath(path)
+}
+
 // copyWithLimit copies content while enforcing maxFileSize. math.MaxInt64 is
 // already the largest representable file size, so adding one to probe for an
 // overflow would itself overflow; in that case an unrestricted copy preserves

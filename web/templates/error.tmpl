@@ -31,20 +31,20 @@
                             <p class="has-text-grey-light is-size-7 mb-5">{{.Details}}</p>
                             {{end}}
                             
+                            {{if or .RetryURL .BackURL}}
                             <div class="buttons is-centered mb-5">
                                 {{if .RetryURL}}
                                 <a href="{{.RetryURL}}" class="button is-primary">重试</a>
                                 {{end}}
-                                
+
                                 {{if .BackURL}}
                                 <a href="{{.BackURL}}" class="button is-light">{{if .BackText}}{{.BackText}}{{else}}返回{{end}}</a>
-                                {{else}}
-                                <a href="/" class="button is-light">返回设置</a>
                                 {{end}}
                             </div>
-                            
+                            {{end}}
+
                             <p class="help">
-                                如果问题持续存在，请检查 <a href="/">Document Server 配置</a> 或查看服务器日志。
+                                如果问题持续存在，请查看服务器日志，或联系管理员在 fnOS 应用设置中检查 Document Server 配置。
                             </p>
                         </div>
                     </div>

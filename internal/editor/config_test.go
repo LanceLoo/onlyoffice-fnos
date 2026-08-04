@@ -48,12 +48,13 @@ func TestProperty1_EditorConfigContainsValidDownloadURL(t *testing.T) {
 		}
 
 		req := &ConfigRequest{
-			FilePath: filePath,
-			FileInfo: fileInfo,
-			UserID:   "user1",
-			UserName: "Test User",
-			Lang:     "en",
-			BaseURL:  baseURL,
+			FilePath:    filePath,
+			FileInfo:    fileInfo,
+			UserID:      "user1",
+			UserName:    "Test User",
+			Lang:        "en",
+			BaseURL:     baseURL,
+			CallbackURL: "http://localhost:10099/callback?session=test-session",
 		}
 
 		config, err := builder.BuildConfig(req)
@@ -176,12 +177,13 @@ func TestProperty6_EditorConfigContainsUserInfo(t *testing.T) {
 		}
 
 		req := &ConfigRequest{
-			FilePath: "/test/document.docx",
-			FileInfo: fileInfo,
-			UserID:   userID,
-			UserName: userName,
-			Lang:     "en",
-			BaseURL:  "http://localhost:10099",
+			FilePath:    "/test/document.docx",
+			FileInfo:    fileInfo,
+			UserID:      userID,
+			UserName:    userName,
+			Lang:        "en",
+			BaseURL:     "http://localhost:10099",
+			CallbackURL: "http://localhost:10099/callback?session=test-session",
 		}
 
 		config, err := builder.BuildConfig(req)
@@ -233,12 +235,13 @@ func TestProperty8_EditorConfigContainsLanguageSetting(t *testing.T) {
 		}
 
 		req := &ConfigRequest{
-			FilePath: "/test/document.docx",
-			FileInfo: fileInfo,
-			UserID:   "user1",
-			UserName: "Test User",
-			Lang:     langInput,
-			BaseURL:  "http://localhost:10099",
+			FilePath:    "/test/document.docx",
+			FileInfo:    fileInfo,
+			UserID:      "user1",
+			UserName:    "Test User",
+			Lang:        langInput,
+			BaseURL:     "http://localhost:10099",
+			CallbackURL: "http://localhost:10099/callback?session=test-session",
 		}
 
 		config, err := builder.BuildConfig(req)
@@ -307,12 +310,13 @@ func TestBuildConfigUnsupportedFormat(t *testing.T) {
 	}
 
 	req := &ConfigRequest{
-		FilePath: "/test/document.xyz",
-		FileInfo: fileInfo,
-		UserID:   "user1",
-		UserName: "Test User",
-		Lang:     "en",
-		BaseURL:  "http://localhost:10099",
+		FilePath:    "/test/document.xyz",
+		FileInfo:    fileInfo,
+		UserID:      "user1",
+		UserName:    "Test User",
+		Lang:        "en",
+		BaseURL:     "http://localhost:10099",
+		CallbackURL: "http://localhost:10099/callback?session=test-session",
 	}
 
 	_, err := builder.BuildConfig(req)
@@ -335,7 +339,7 @@ func TestBuildConfigEditMode(t *testing.T) {
 		{"docx", "edit", true},
 		{"xlsx", "edit", true},
 		{"pptx", "edit", true},
-		{"pdf", "view", false},
+		{"pdf", "edit", true},
 		{"doc", "view", false},
 	}
 
@@ -349,12 +353,13 @@ func TestBuildConfigEditMode(t *testing.T) {
 		}
 
 		req := &ConfigRequest{
-			FilePath: "/test/document." + tt.ext,
-			FileInfo: fileInfo,
-			UserID:   "user1",
-			UserName: "Test User",
-			Lang:     "en",
-			BaseURL:  "http://localhost:10099",
+			FilePath:    "/test/document." + tt.ext,
+			FileInfo:    fileInfo,
+			UserID:      "user1",
+			UserName:    "Test User",
+			Lang:        "en",
+			BaseURL:     "http://localhost:10099",
+			CallbackURL: "http://localhost:10099/callback?session=test-session",
 		}
 
 		config, err := builder.BuildConfig(req)
@@ -370,6 +375,50 @@ func TestBuildConfigEditMode(t *testing.T) {
 		if config.Document.Permissions.Edit != tt.canEdit {
 			t.Errorf("expected edit permission %v for %s, got %v", tt.canEdit, tt.ext, config.Document.Permissions.Edit)
 		}
+	}
+}
+
+func TestBuildConfigPDF(t *testing.T) {
+	builder := NewConfigBuilder(format.NewManager(), jwt.NewManager())
+	fileInfo := &file.FileInfo{
+		Path:      "/test/document.pdf",
+		Name:      "document.pdf",
+		Extension: "pdf",
+		ModTime:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	config, err := builder.BuildConfig(&ConfigRequest{
+		FilePath:    "/test/document.pdf",
+		FileInfo:    fileInfo,
+		BaseURL:     "http://localhost:10099",
+		CallbackURL: "http://localhost:10099/callback?session=test-session",
+	})
+	if err != nil {
+		t.Fatalf("BuildConfig returned an error: %v", err)
+	}
+	if config.DocumentType != "pdf" {
+		t.Errorf("document type = %q, want pdf", config.DocumentType)
+	}
+	if !config.Document.Permissions.Edit {
+		t.Error("PDF edit permission should be enabled")
+	}
+	if config.EditorConfig.Mode != "edit" {
+		t.Errorf("PDF editor mode = %q, want edit", config.EditorConfig.Mode)
+	}
+	if config.EditorConfig.CallbackURL != "http://localhost:10099/callback?session=test-session" {
+		t.Errorf("callback URL = %q", config.EditorConfig.CallbackURL)
+	}
+}
+
+func TestBuildConfigRequiresCallbackURL(t *testing.T) {
+	builder := NewConfigBuilder(format.NewManager(), jwt.NewManager())
+	_, err := builder.BuildConfig(&ConfigRequest{
+		FilePath: "/test/document.docx",
+		FileInfo: &file.FileInfo{Extension: "docx"},
+		BaseURL:  "http://localhost:10099",
+	})
+	if err == nil {
+		t.Fatal("BuildConfig should reject a missing capability-protected callback URL")
 	}
 }
 
@@ -390,13 +439,14 @@ func TestBuildConfigWithJWT(t *testing.T) {
 	}
 
 	req := &ConfigRequest{
-		FilePath:  "/test/document.docx",
-		FileInfo:  fileInfo,
-		UserID:    "user1",
-		UserName:  "Test User",
-		Lang:      "en",
-		BaseURL:   "http://localhost:10099",
-		JWTSecret: secret,
+		FilePath:    "/test/document.docx",
+		FileInfo:    fileInfo,
+		UserID:      "user1",
+		UserName:    "Test User",
+		Lang:        "en",
+		BaseURL:     "http://localhost:10099",
+		CallbackURL: "http://localhost:10099/callback?session=test-session",
+		JWTSecret:   secret,
 	}
 
 	config, err := builder.BuildConfig(req)

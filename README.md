@@ -1,8 +1,8 @@
 # OnlyOffice fnOS Connector
 
-在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX 在线编辑；支持 DOC、ODT、RTF、TXT、XLS、ODS、CSV、PPT、ODP 转换为对应的 OOXML 格式；并支持 PDF、DJVU、OXPS、EPUB、FB2 只读查看。
+在浏览器中直接编辑 NAS 上的 Office 文档。支持 DOCX、XLSX、PPTX、PDF 在线编辑；支持 DOC、ODT、RTF、TXT、XLS、ODS、CSV、PPT、ODP 转换为对应的 OOXML 格式；DJVU、OXPS、EPUB、FB2 支持只读查看。
 
-这是基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 的 Docker 化 fnOS 文件连接器 fork；不计划开发原生 fnOS 应用。
+本项目基于 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) 持续开发，现作为独立项目维护；不计划开发原生 fnOS 应用。
 
 > ⚠️ **早期开发阶段**
 > 
@@ -10,10 +10,10 @@
 
 ## 功能特性
 
-- **在线编辑**: 直接在浏览器中编辑 DOCX、XLSX、PPTX 文档
+- **在线编辑**: 直接在浏览器中编辑 DOCX、XLSX、PPTX、PDF 文档（PDF 编辑要求 ONLYOFFICE Docs / Document Server 8.1 或更高版本）
 - **格式转换**: 支持 DOC、ODT、RTF、TXT 转换为 DOCX，XLS、ODS、CSV 转换为 XLSX，以及 PPT、ODP 转换为 PPTX
 - **文本导入选项**: CSV 转换可选择编码和分隔符；TXT 转换可选择编码
-- **文档查看**: 支持 PDF、DJVU、OXPS、EPUB、FB2 等格式的只读预览
+- **文档查看**: 支持 DJVU、OXPS、EPUB、FB2 等格式的只读预览
 - **JWT 安全**: 支持 JWT 签名验证，确保文档传输安全
 - **fnOS 集成**: 面向飞牛 NAS（fnOS）适配的应用连接器
 
@@ -21,9 +21,11 @@
 
 | 类型 | 可编辑 | 可转换 | 仅查看 |
 |------|--------|--------|--------|
-| 文档 | docx | doc, odt, rtf, txt | pdf, djvu, oxps, epub, fb2 |
+| 文档 | docx, pdf | doc, odt, rtf, txt | djvu, oxps, epub, fb2 |
 | 表格 | xlsx | xls, ods, csv | - |
 | 演示 | pptx | ppt, odp | - |
+
+> ⚠️ **生产安全要求**：生产部署必须启用 JWT，并确保 connector 与 ONLYOFFICE Docs / Document Server 使用完全一致的密钥。
 
 ## 安装部署
 
@@ -126,13 +128,12 @@ go test ./...
 
 MIT License
 
-本项目基于上游项目 [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos)，其 README 声明采用 MIT License。本 fork 保留上游的署名和许可证声明；本 fork 的变更记录见项目历史。本项目与 fnOS 及 ONLYOFFICE 均无官方关联或背书关系。
-
 ### 第三方组件与商标
 
 [ONLYOFFICE Docs（Document Server）](https://github.com/ONLYOFFICE/DocumentServer) 是独立发布的第三方组件；其开源版本及不同发行版的许可证、商用条款和使用条件请以官方项目说明为准。ONLYOFFICE、fnOS 及相关名称和标识属于各自权利人的商标或品牌。
 
 ## 致谢
 
+- [tf4fun/onlyoffice-fnos](https://github.com/tf4fun/onlyoffice-fnos) — 项目基础与开源贡献
 - [OnlyOffice Document Server](https://github.com/ONLYOFFICE/DocumentServer)
 - [飞牛 NAS (fnOS)](https://www.fnnas.com/)

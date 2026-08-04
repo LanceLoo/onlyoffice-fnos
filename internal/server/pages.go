@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net"
@@ -325,8 +326,11 @@ func (s *Server) buildEditorConfig(req *editorConfigRequest) (map[string]interfa
 	// Build download URL
 	downloadURL := s.buildDownloadURL(req.FilePath)
 
-	// Build callback URL
-	callbackURL := s.buildCallbackURL(req.FilePath)
+	// Issue a capability bound to this document rather than exposing its path.
+	callbackURL, err := s.buildCallbackURL(docKey, req.FilePath, req.FileInfo.Extension)
+	if err != nil {
+		return nil, fmt.Errorf("build callback URL: %w", err)
+	}
 
 	config := map[string]interface{}{
 		"document": map[string]interface{}{
@@ -364,10 +368,18 @@ func (s *Server) buildEditorConfig(req *editorConfigRequest) (map[string]interfa
 	return config, nil
 }
 
-// buildCallbackURL builds the callback URL for a file
-func (s *Server) buildCallbackURL(filePath string) string {
+// buildCallbackURL builds a capability-protected callback URL for a document.
+func (s *Server) buildCallbackURL(key, filePath, fileType string) (string, error) {
 	baseURL := s.getEffectiveBaseURL()
-	return baseURL + "/callback?path=" + url.QueryEscape(filePath)
+	canonicalPath, err := s.fileService.CanonicalPath(filePath)
+	if err != nil {
+		return "", err
+	}
+	session, err := s.issueCallbackSession(key, canonicalPath, fileType)
+	if err != nil {
+		return "", err
+	}
+	return baseURL + "/callback?session=" + url.QueryEscape(session), nil
 }
 
 // Fallback renderers for when templates are not available
@@ -398,7 +410,8 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
 	textOptions := ""
 	if data.IsCSV {
 		textOptions = `
-    <div style="text-align:left; margin: 10px 0;">
+    <details class="convert-advanced">
+        <summary>转换设置（编码与分隔符 · 默认 UTF-8 / 逗号）</summary>
         <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
         <select id="codePage" name="codePage" style="width:100%; padding:8px; margin-bottom:10px;">
             <option value="65001" selected>UTF-8（推荐）</option>
@@ -411,17 +424,18 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             <option value="1">Tab</option>
             <option value="2">分号 (;)</option>
         </select>
-    </div>`
+    </details>`
 	} else if data.IsTXT {
 		textOptions = `
-    <div style="text-align:left; margin: 10px 0;">
+    <details class="convert-advanced">
+        <summary>转换设置（编码 · 默认 UTF-8）</summary>
         <label for="codePage" style="display:block; margin-bottom:4px; font-weight:bold;">编码</label>
         <select id="codePage" name="codePage" style="width:100%; padding:8px;">
             <option value="65001" selected>UTF-8（推荐）</option>
             <option value="936">简体中文 GBK / GB2312</option>
             <option value="950">繁体中文 Big5</option>
         </select>
-    </div>`
+    </details>`
 	}
 	html := `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -447,6 +461,9 @@ func (s *Server) renderConvertPageFallback(w http.ResponseWriter, data *ConvertP
             .modal-actions .btn { width: 100%; }
         }
         .delete { background: none; border: none; font-size: 20px; cursor: pointer; }
+        .convert-advanced { text-align: left; margin: 10px 0; }
+        .convert-advanced summary { cursor: pointer; color: #666; font-size: 0.875rem; }
+        .convert-advanced[open] summary { margin-bottom: 10px; }
     </style>
 </head>
 <body>
